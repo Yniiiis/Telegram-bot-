@@ -46,6 +46,9 @@ export default function App() {
               first_name: "Dev",
             });
           }
+        } else if (import.meta.env.DEV) {
+          const dev = await authDev();
+          if (!cancelled && dev) setSession(dev.access_token, dev.user);
         }
       } catch (e) {
         if (!cancelled) {

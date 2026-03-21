@@ -1,0 +1,11 @@
+{
+  "name": "telegram-music-bot",
+  "private": true,
+  "description": "Monorepo: Vercel deploys frontend only; API and bot live elsewhere.",
+  "scripts": {
+    "build": "npm ci --prefix frontend && npm run build --prefix frontend"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
