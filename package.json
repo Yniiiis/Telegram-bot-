@@ -1,7 +1,7 @@
 {
   "name": "telegram-music-bot",
   "private": true,
-  "description": "Monorepo: Vercel deploys frontend only; API and bot live elsewhere.",
+  "description": "Monorepo: deploy Mini App on Vercel with Root Directory = frontend (vercel.json outputDirectory is dist). API and bot deploy separately.",
   "scripts": {
     "build": "npm ci --prefix frontend && npm run build --prefix frontend"
   },
