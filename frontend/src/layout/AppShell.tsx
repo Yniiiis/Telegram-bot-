@@ -24,7 +24,7 @@ export function AppShell() {
         <audio
           ref={audioRef as RefObject<HTMLAudioElement>}
           playsInline
-          preload="none"
+          preload="metadata"
           className="hidden"
         />
         <BottomNav />

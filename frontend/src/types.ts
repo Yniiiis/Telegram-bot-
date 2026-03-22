@@ -1,3 +1,9 @@
+export interface DailyContextMeta {
+  id: string;
+  label: string;
+  query: string;
+}
+
 export interface Track {
   id: string;
   title: string;

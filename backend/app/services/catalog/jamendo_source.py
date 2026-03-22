@@ -17,8 +17,72 @@ def _license_short_from_item(item: dict) -> str | None:
     return None
 
 
+def _external_track_from_jamendo_item(item: dict) -> ExternalTrack | None:
+    tid = str(item.get("id", ""))
+    audio = item.get("audio")
+    if not tid or not audio:
+        return None
+    duration = item.get("duration")
+    duration_sec = int(duration) if duration is not None else None
+    lic_url = item.get("license_ccurl")
+    license_url = str(lic_url).strip() if lic_url else None
+    return ExternalTrack(
+        source="jamendo",
+        external_id=tid,
+        title=str(item.get("name") or "Unknown"),
+        artist=str(item.get("artist_name") or "Unknown"),
+        duration_sec=duration_sec,
+        audio_url=str(audio),
+        cover_url=item.get("image") or item.get("album_image"),
+        license_url=license_url,
+        license_short=_license_short_from_item(item),
+    )
+
+
 class JamendoCatalogSource(CatalogSource):
     """Official Jamendo API only — stream URLs from the `audio` field (not download endpoints)."""
+
+    async def recent_by_tags(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        tags: list[str],
+        per_tag: int = 8,
+    ) -> list[ExternalTrack]:
+        """Recent uploads per genre tag (Jamendo `releasedate_desc`)."""
+        cid = settings.jamendo_client_id
+        if not cid:
+            return []
+        out: list[ExternalTrack] = []
+        seen: set[str] = set()
+        for tag in tags:
+            params = {
+                "client_id": cid,
+                "format": "json",
+                "limit": min(per_tag, 50),
+                "offset": 0,
+                "fuzzytags": tag,
+                "order": "releasedate_desc",
+                "audioformat": "mp32",
+            }
+            try:
+                r = await client.get(JAMENDO_TRACKS_URL, params=params, timeout=25.0)
+                if r.status_code >= 400:
+                    continue
+                data = r.json()
+            except Exception:
+                continue
+            for item in data.get("results") or []:
+                if not isinstance(item, dict):
+                    continue
+                t = _external_track_from_jamendo_item(item)
+                if not t:
+                    continue
+                if t.external_id in seen:
+                    continue
+                seen.add(t.external_id)
+                out.append(t)
+        return out
 
     async def search(
         self,
@@ -46,26 +110,9 @@ class JamendoCatalogSource(CatalogSource):
         results = data.get("results") or []
         out: list[ExternalTrack] = []
         for item in results:
-            tid = str(item.get("id", ""))
-            # Use progressive stream URL only; avoid `audiodownload` (distribution / ToS differ).
-            audio = item.get("audio")
-            if not tid or not audio:
+            if not isinstance(item, dict):
                 continue
-            duration = item.get("duration")
-            duration_sec = int(duration) if duration is not None else None
-            lic_url = item.get("license_ccurl")
-            license_url = str(lic_url).strip() if lic_url else None
-            out.append(
-                ExternalTrack(
-                    source="jamendo",
-                    external_id=tid,
-                    title=str(item.get("name") or "Unknown"),
-                    artist=str(item.get("artist_name") or "Unknown"),
-                    duration_sec=duration_sec,
-                    audio_url=str(audio),
-                    cover_url=item.get("image") or item.get("album_image"),
-                    license_url=license_url,
-                    license_short=_license_short_from_item(item),
-                )
-            )
+            t = _external_track_from_jamendo_item(item)
+            if t:
+                out.append(t)
         return out

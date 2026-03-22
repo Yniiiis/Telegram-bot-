@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
-
 import { authDev, authTelegram } from "./lib/api";
 import { getInitData, initTelegramUi, isTelegramWebApp } from "./lib/telegram";
 import { useAuthStore } from "./store/authStore";

@@ -1,5 +1,6 @@
-import { memo } from "react";
+import { memo, useEffect, useState } from "react";
 
+import { HypeMark } from "./HypeMark";
 import type { Track } from "../types";
 
 interface TrackListProps {
@@ -8,7 +9,7 @@ interface TrackListProps {
   favoriteIds?: Set<string>;
   onPlay: (track: Track, index: number) => void;
   onToggleFavorite?: (track: Track) => void;
-  /** When set, show remove control instead of heart (e.g. playlist editing). */
+  /** When set, show remove control instead of Hype (e.g. playlist editing). */
   onRemoveFromList?: (track: Track) => void;
   emptyLabel?: string;
 }
@@ -93,7 +94,7 @@ export function TrackList({
                     }
                   }}
                 >
-                  <Heart filled={!!fav} />
+                  <HypeMark filled={!!fav} />
                 </span>
               )}
             </button>
@@ -120,7 +121,13 @@ export const Cover = memo(function Cover({
   priority?: boolean;
 }) {
   const size = small ? "h-12 w-12" : "h-14 w-14";
-  if (url) {
+  const [imgFailed, setImgFailed] = useState(false);
+
+  useEffect(() => {
+    setImgFailed(false);
+  }, [url]);
+
+  if (url && !imgFailed) {
     return (
       <img
         src={url}
@@ -131,6 +138,7 @@ export const Cover = memo(function Cover({
         decoding="async"
         fetchPriority={priority ? "high" : lazy ? "low" : "auto"}
         className={`${size} shrink-0 rounded-md bg-spotify-highlight object-cover`}
+        onError={() => setImgFailed(true)}
       />
     );
   }
@@ -147,19 +155,6 @@ function formatDuration(sec: number): string {
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return `${m}:${s.toString().padStart(2, "0")}`;
-}
-
-function Heart({ filled }: { filled: boolean }) {
-  return (
-    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden>
-      <path
-        d="M12 21s-6.716-4.432-9-8.5C.5 8.5 2.5 5 6.5 5c2.2 0 3.5 1.5 3.5 1.5S11.3 5 13.5 5c4 0 6 3.5 4.5 7.5C18.716 16.568 12 21 12 21Z"
-        fill={filled ? "#1ed760" : "none"}
-        stroke={filled ? "#1ed760" : "currentColor"}
-        strokeWidth="1.5"
-      />
-    </svg>
-  );
 }
 
 function RemoveIcon() {

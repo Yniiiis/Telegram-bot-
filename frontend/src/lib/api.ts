@@ -81,17 +81,32 @@ export interface SearchPageResult {
   has_more: boolean;
 }
 
+/** Optional search filters (passed as query params). */
+export interface SearchFilters {
+  sources?: string[];
+  min_duration_sec?: number | null;
+  max_duration_sec?: number | null;
+}
+
 export async function searchTracksPage(
   token: string,
   q: string,
   offset: number,
   limit: number,
+  filters?: SearchFilters,
 ): Promise<SearchPageResult> {
   const params = new URLSearchParams({
     q,
     offset: String(offset),
     limit: String(limit),
   });
+  if (filters?.sources?.length) params.set("sources", filters.sources.join(","));
+  if (filters?.min_duration_sec != null && filters.min_duration_sec >= 0) {
+    params.set("min_duration_sec", String(filters.min_duration_sec));
+  }
+  if (filters?.max_duration_sec != null && filters.max_duration_sec >= 0) {
+    params.set("max_duration_sec", String(filters.max_duration_sec));
+  }
   const res = await fetch(`${base()}/search?${params}`, {
     headers: { ...authHeader(token) },
   });
@@ -100,8 +115,53 @@ export async function searchTracksPage(
 
 /** First page only (backward compatible). */
 export async function searchTracks(token: string, q: string, limit = 25): Promise<Track[]> {
-  const page = await searchTracksPage(token, q, 0, limit);
+  const page = await searchTracksPage(token, q, 0, limit, undefined);
   return page.tracks;
+}
+
+export interface DailyContextMeta {
+  id: string;
+  label: string;
+  query: string;
+}
+
+export interface DiscoveryMetaResponse {
+  contexts: DailyContextMeta[];
+  catalog_sources: string[];
+  weekday_mood_query: string;
+}
+
+export async function getDiscoveryMeta(token: string): Promise<DiscoveryMetaResponse> {
+  const res = await fetch(`${base()}/discovery/meta`, { headers: { ...authHeader(token) } });
+  return parseJson<DiscoveryMetaResponse>(res);
+}
+
+export async function getNewReleases(token: string, limit = 20): Promise<Track[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  const res = await fetch(`${base()}/discovery/new-releases?${params}`, {
+    headers: { ...authHeader(token) },
+  });
+  const data = await parseJson<{ tracks: Track[] }>(res);
+  return data.tracks;
+}
+
+export interface DiscoveryPicksResponse {
+  tracks: Track[];
+  used_query: string;
+  context_id: string | null;
+  mode: string;
+}
+
+export async function getDiscoveryPicks(
+  token: string,
+  opts: { mode: "weekday" | "context"; context?: string },
+): Promise<DiscoveryPicksResponse> {
+  const params = new URLSearchParams({ mode: opts.mode, limit: "18" });
+  if (opts.context) params.set("context", opts.context);
+  const res = await fetch(`${base()}/discovery/picks?${params}`, {
+    headers: { ...authHeader(token) },
+  });
+  return parseJson<DiscoveryPicksResponse>(res);
 }
 
 export async function recordPlay(token: string, trackId: string): Promise<void> {

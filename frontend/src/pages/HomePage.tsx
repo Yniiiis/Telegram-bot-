@@ -1,19 +1,23 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
+import { ActivityPicksWave } from "../components/ActivityPicksWave";
 import { SearchBar } from "../components/SearchBar";
 import { TrackListSkeleton } from "../components/Skeleton";
 import { TrackList } from "../components/TrackList";
 import {
   addFavorite,
+  getDiscoveryMeta,
+  getDiscoveryPicks,
   getFavorites,
+  getNewReleases,
   getRecentTracks,
   removeFavorite,
   searchTracks,
 } from "../lib/api";
 import { useAuthStore } from "../store/authStore";
 import { usePlayerStore } from "../store/playerStore";
-import type { Track } from "../types";
+import type { DailyContextMeta, Track } from "../types";
 
 export function HomePage() {
   const navigate = useNavigate();
@@ -22,8 +26,16 @@ export function HomePage() {
   const [q, setQ] = useState("");
   const [recs, setRecs] = useState<Track[]>([]);
   const [recent, setRecent] = useState<Track[]>([]);
+  const [newTracks, setNewTracks] = useState<Track[]>([]);
+  const [contexts, setContexts] = useState<DailyContextMeta[]>([]);
+  const [weekdayHint, setWeekdayHint] = useState("");
+  const [picksTracks, setPicksTracks] = useState<Track[]>([]);
+  const [picksLabel, setPicksLabel] = useState("");
+  const [activeContextId, setActiveContextId] = useState<string | null>(null);
   const [loadingRecs, setLoadingRecs] = useState(true);
   const [loadingRecent, setLoadingRecent] = useState(true);
+  const [loadingNew, setLoadingNew] = useState(true);
+  const [loadingPicks, setLoadingPicks] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(() => new Set());
 
@@ -61,6 +73,54 @@ export function HomePage() {
     }
   }, [token]);
 
+  const loadNew = useCallback(async () => {
+    if (!token) return;
+    setLoadingNew(true);
+    try {
+      const tracks = await getNewReleases(token, 18);
+      setNewTracks(tracks);
+    } catch {
+      setNewTracks([]);
+    } finally {
+      setLoadingNew(false);
+    }
+  }, [token]);
+
+  const loadMetaAndPicks = useCallback(async () => {
+    if (!token) return;
+    setLoadingPicks(true);
+    try {
+      const meta = await getDiscoveryMeta(token);
+      setContexts(meta.contexts);
+      setWeekdayHint(meta.weekday_mood_query);
+      const picks = await getDiscoveryPicks(token, { mode: "weekday" });
+      setPicksTracks(picks.tracks);
+      setPicksLabel(picks.used_query);
+      setActiveContextId(null);
+    } catch {
+      setContexts([]);
+      setPicksTracks([]);
+      setPicksLabel("");
+    } finally {
+      setLoadingPicks(false);
+    }
+  }, [token]);
+
+  const loadContextPicks = useCallback(async (ctx: DailyContextMeta) => {
+    if (!token) return;
+    setLoadingPicks(true);
+    setActiveContextId(ctx.id);
+    try {
+      const picks = await getDiscoveryPicks(token, { mode: "context", context: ctx.id });
+      setPicksTracks(picks.tracks);
+      setPicksLabel(ctx.label);
+    } catch {
+      setPicksTracks([]);
+    } finally {
+      setLoadingPicks(false);
+    }
+  }, [token]);
+
   useEffect(() => {
     void loadRecs();
   }, [loadRecs]);
@@ -68,6 +128,14 @@ export function HomePage() {
   useEffect(() => {
     void loadRecent();
   }, [loadRecent]);
+
+  useEffect(() => {
+    void loadNew();
+  }, [loadNew]);
+
+  useEffect(() => {
+    void loadMetaAndPicks();
+  }, [loadMetaAndPicks]);
 
   const activeId = usePlayerStore((s) => s.queue[s.index]?.id ?? null);
 
@@ -108,6 +176,88 @@ export function HomePage() {
         }}
         placeholder="What do you want to hear?"
       />
+
+      <section>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-white">Новинки с площадок</h2>
+          <button
+            type="button"
+            onClick={() => void loadNew()}
+            className="text-xs font-medium text-spotify-accent hover:underline"
+          >
+            Обновить
+          </button>
+        </div>
+        <p className="mb-2 text-xs text-spotify-muted">
+          Подборка обновляется в фоне из каталогов (Jamendo по дате, общий поиск и др.). Нужен запущенный API.
+        </p>
+        {loadingNew && <TrackListSkeleton rows={4} />}
+        {!loadingNew && newTracks.length === 0 && (
+          <p className="text-sm text-spotify-muted">Пока пусто — подождите фоновое обновление или откройте поиск.</p>
+        )}
+        {!loadingNew && newTracks.length > 0 && (
+          <TrackList
+            tracks={newTracks}
+            activeId={activeId}
+            favoriteIds={favoriteIds}
+            onToggleFavorite={toggleFavorite}
+            onPlay={(_t, index) => setQueue(newTracks, index)}
+            emptyLabel=""
+          />
+        )}
+      </section>
+
+      <section>
+        <div className="mb-2">
+          <h2 className="text-lg font-semibold text-white">Сегодня под настроение и дела</h2>
+          <p className="mt-1 text-xs text-spotify-muted">
+            День недели: <span className="text-spotify-accent">{weekdayHint}</span>
+          </p>
+        </div>
+        <div className="mb-3 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => void loadMetaAndPicks()}
+            className={`rounded-full px-3 py-1.5 text-xs font-medium ${
+              activeContextId === null
+                ? "bg-spotify-accent text-black"
+                : "bg-spotify-elevated text-white hover:bg-white/10"
+            }`}
+          >
+            День недели
+          </button>
+          {contexts.map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              onClick={() => void loadContextPicks(c)}
+              className={`rounded-full px-3 py-1.5 text-xs font-medium ${
+                activeContextId === c.id
+                  ? "bg-spotify-accent text-black"
+                  : "bg-spotify-elevated text-white hover:bg-white/10"
+              }`}
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
+        {loadingPicks && <TrackListSkeleton rows={5} />}
+        {!loadingPicks && picksTracks.length > 0 && (
+          <>
+            <p className="mb-3 text-xs text-spotify-muted">Подборка: {picksLabel}</p>
+            <ActivityPicksWave
+              tracks={picksTracks}
+              activeId={activeId}
+              favoriteIds={favoriteIds}
+              onToggleFavorite={toggleFavorite}
+              onPlay={(_t, index) => setQueue(picksTracks, index)}
+            />
+          </>
+        )}
+        {!loadingPicks && picksTracks.length === 0 && (
+          <p className="text-sm text-spotify-muted">Нет треков для этой подборки.</p>
+        )}
+      </section>
 
       <section>
         <div className="mb-3 flex items-center justify-between">

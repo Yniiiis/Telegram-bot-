@@ -26,7 +26,10 @@ def _parse_duration(raw: str | None) -> int | None:
 
 
 class ZaycevCatalogSource(CatalogSource):
-    """Catalog via Zaycev official `api.zaycev.net/external` (search + per-track play URL)."""
+    """
+    Каталог Zaycev через `api.zaycev.net/external`.
+    Клиент — Python-аналог `api.ZClient` из https://github.com/pixfid/go-zaycevnet (те же эндпоинты и auth).
+    """
 
     async def search(
         self,
@@ -79,7 +82,13 @@ class ZaycevCatalogSource(CatalogSource):
             if not audio:
                 continue
             title = str(item.get("track") or "Unknown").strip() or "Unknown"
-            artist = str(item.get("artistName") or "Unknown").strip() or "Unknown"
+            raw_artist = (
+                item.get("artistName")
+                or item.get("artist")
+                or item.get("artistname")
+                or item.get("artist_name")
+            )
+            artist = str(raw_artist or "Unknown").strip() or "Unknown"
             cover = item.get("trackImageUrl") or item.get("artistImageUrlSquare250")
             out.append(
                 ExternalTrack(

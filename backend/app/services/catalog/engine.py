@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import httpx
@@ -7,6 +8,15 @@ from app.services.catalog.hitmotop_source import HitmotopCatalogSource
 from app.services.catalog.jamendo_source import JamendoCatalogSource
 from app.services.catalog.mock_source import MockCatalogSource
 from app.services.catalog.protocol import CatalogSource
+from app.services.catalog.relevance import rank_by_relevance
+from app.services.catalog.search_pipeline import (
+    deep_query_variants,
+    merge_dedupe_cross_source,
+    normalize_track_metadata,
+    sanitize_track,
+)
+from app.services.catalog.soundcloud_source import SoundCloudCatalogSource
+from app.services.catalog.youtube_music_source import YoutubeMusicCatalogSource
 from app.services.catalog.zaycev_source import ZaycevCatalogSource
 from app.services.external_track import ExternalTrack
 
@@ -17,6 +27,7 @@ SOURCE_REGISTRY: dict[str, CatalogSource] = {
     "zaycev": ZaycevCatalogSource(),
     "hitmotop": HitmotopCatalogSource(),
     "jamendo": JamendoCatalogSource(),
+    "youtube_music": YoutubeMusicCatalogSource(),
     "mock": MockCatalogSource(),
 }
 
@@ -24,9 +35,23 @@ SOURCE_REGISTRY: dict[str, CatalogSource] = {
 def _provider_chain() -> list[str]:
     raw = (settings.catalog_provider_chain or "").strip()
     if not raw:
-        return ["zaycev", "hitmotop", "jamendo", "mock"]
+        return ["zaycev", "hitmotop", "jamendo", "youtube_music", "soundcloud", "mock"]
     parts = [p.strip().lower() for p in raw.split(",") if p.strip()]
-    return parts or ["zaycev", "hitmotop", "jamendo", "mock"]
+    return parts or ["zaycev", "hitmotop", "jamendo", "youtube_music", "soundcloud", "mock"]
+
+
+def _dedupe_best_score(
+    ranked_batches: list[list[tuple[float, ExternalTrack]]],
+) -> list[tuple[float, ExternalTrack]]:
+    best: dict[tuple[str, str], tuple[float, ExternalTrack]] = {}
+    for batch in ranked_batches:
+        for score, track in batch:
+            key = (track.source, track.external_id)
+            if key not in best or score > best[key][0]:
+                best[key] = (score, track)
+    merged = list(best.values())
+    merged.sort(key=lambda x: (-x[0], x[1].title.casefold()))
+    return merged
 
 
 async def search_catalog(
@@ -34,6 +59,7 @@ async def search_catalog(
 ) -> list[ExternalTrack]:
     q = query.strip()
     chain = _provider_chain()
+    min_keep = settings.search_relevance_min_keep
 
     if not q:
         mock = SOURCE_REGISTRY.get("mock")
@@ -41,14 +67,50 @@ async def search_catalog(
             return []
         return await mock.search(client, "", offset=offset, limit=limit)
 
-    for name in chain:
+    async def _search_one(name: str) -> list[ExternalTrack]:
         src = SOURCE_REGISTRY.get(name)
         if src is None:
             logger.warning("unknown catalog provider %r — skipped", name)
-            continue
-        # MockCatalogSource.search ignores client; Jamendo uses it.
-        results = await src.search(client, q, offset=offset, limit=limit)  # type: ignore[union-attr]
-        if results:
-            return results
+            return []
 
-    return []
+        if settings.search_deep_variants:
+            variants = deep_query_variants(q, max_variants=settings.search_deep_max_variants)
+        else:
+            variants = [q]
+
+        seen_keys: set[tuple[str, str]] = set()
+        merged_raw: list[ExternalTrack] = []
+
+        for vq in variants:
+            try:
+                chunk = await src.search(client, vq, offset=offset, limit=limit)  # type: ignore[union-attr]
+            except Exception as exc:
+                logger.warning("catalog provider %s search failed (%r): %s", name, vq, exc)
+                continue
+            for t in chunk:
+                key = (t.source, t.external_id)
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    merged_raw.append(t)
+
+        return merged_raw
+
+    per_provider = await asyncio.gather(*[_search_one(n) for n in chain])
+
+    collected_batches: list[list[tuple[float, ExternalTrack]]] = []
+    for raw in per_provider:
+        if raw:
+            collected_batches.append(rank_by_relevance(q, raw))
+
+    if not collected_batches:
+        return []
+
+    merged = _dedupe_best_score(collected_batches)
+    merged = merge_dedupe_cross_source(merged)
+
+    kept_scored = [(s, t) for s, t in merged if s >= min_keep][:limit]
+    if kept_scored:
+        return [
+            sanitize_track(normalize_track_metadata(t, query=q)) for _, t in kept_scored
+        ]
+    return [sanitize_track(normalize_track_metadata(t, query=q)) for _, t in merged[:limit]]

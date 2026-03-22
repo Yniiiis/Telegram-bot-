@@ -82,20 +82,15 @@ class HitmotopCatalogSource(CatalogSource):
 
         out: list[ExternalTrack] = []
         for sid, title, mp3 in slice_pairs:
-            artist = "Unknown"
-            t = title
-            if " - " in title:
-                t, _, rest = title.partition(" - ")
-                artist = rest.strip() or artist
-            elif " – " in title:
-                t, _, rest = title.partition(" – ")
-                artist = rest.strip() or artist
+            # HTML anchor text is often «Исполнитель - Трек»; leave combined in `title` with
+            # artist Unknown so `normalize_track_metadata` can split using the search query.
+            combined = " ".join((title or "Unknown").split()).strip() or "Unknown"
             out.append(
                 ExternalTrack(
                     source="hitmotop",
                     external_id=sid,
-                    title=t.strip() or "Unknown",
-                    artist=artist,
+                    title=combined,
+                    artist="Unknown",
                     duration_sec=None,
                     audio_url=mp3,
                     cover_url=None,

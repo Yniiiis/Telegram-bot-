@@ -1,11 +1,33 @@
+import asyncio
+import contextlib
+import logging
 from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.db.session import init_db
-from app.routers import auth, favorites, history, playlists, search, stream, tracks
+from app.config import settings
+from app.db.session import SessionLocal, init_db
+from app.routers import auth, discovery, favorites, history, playlists, search, stream, tracks
+
+logger = logging.getLogger(__name__)
+
+
+async def _new_releases_refresh_loop(app: FastAPI) -> None:
+    from app.services.discovery import refresh_featured_new_releases
+
+    await asyncio.sleep(12)
+    while True:
+        try:
+            async with SessionLocal() as db:
+                n = await refresh_featured_new_releases(db, app.state.http_client)
+                logger.info("featured new releases refreshed (%s tracks)", n)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("featured new releases refresh failed")
+        await asyncio.sleep(max(300, settings.new_releases_refresh_sec))
 
 
 @asynccontextmanager
@@ -16,7 +38,13 @@ async def lifespan(app: FastAPI):
         timeout=httpx.Timeout(60.0),
     ) as client:
         app.state.http_client = client
-        yield
+        task = asyncio.create_task(_new_releases_refresh_loop(app))
+        try:
+            yield
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 app = FastAPI(title="Telegram Music API", lifespan=lifespan)
@@ -30,6 +58,7 @@ app.add_middleware(
 )
 
 app.include_router(auth.router)
+app.include_router(discovery.router)
 app.include_router(search.router)
 app.include_router(history.router)
 app.include_router(tracks.router)

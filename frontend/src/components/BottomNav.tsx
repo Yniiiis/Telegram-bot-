@@ -1,5 +1,7 @@
 import { NavLink } from "react-router-dom";
 
+import { HypeMark } from "./HypeMark";
+
 const linkClass =
   "flex flex-1 flex-col items-center gap-0.5 py-2 text-[10px] font-medium text-spotify-muted transition";
 
@@ -27,8 +29,12 @@ export function BottomNav() {
         to="/favorites"
         className={({ isActive }) => `${linkClass} ${isActive ? "!text-spotify-accent" : ""}`}
       >
-        <HeartIcon />
-        Liked
+        {({ isActive }) => (
+          <>
+            <HypeMark filled={isActive} />
+            Hype
+          </>
+        )}
       </NavLink>
       <NavLink
         to="/playlists"
@@ -54,17 +60,6 @@ function SearchNavIcon() {
     <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
       <path d="M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Zm0-2a5.5 5.5 0 1 0 0-11 5.5 5.5 0 0 0 0 11Z" />
       <path d="M16.5 16.5 21 21" stroke="currentColor" strokeWidth="2" fill="none" />
-    </svg>
-  );
-}
-
-function HeartIcon() {
-  return (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden>
-      <path
-        d="M12 21s-6.716-4.432-9-8.5C.5 8.5 2.5 5 6.5 5c2.2 0 3.5 1.5 3.5 1.5S11.3 5 13.5 5c4 0 6 3.5 4.5 7.5C18.716 16.568 12 21 12 21Z"
-        strokeWidth="1.6"
-      />
     </svg>
   );
 }

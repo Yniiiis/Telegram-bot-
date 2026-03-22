@@ -4,7 +4,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.config import settings
 from app.models import Base  # noqa: F401
-from app.models import Favorite, PlayHistory, Playlist, PlaylistTrack, Track, User  # noqa: F401
+from app.models import (  # noqa: F401
+    Favorite,
+    FeaturedNewRelease,
+    PlayHistory,
+    Playlist,
+    PlaylistTrack,
+    Track,
+    User,
+)
 
 engine = create_async_engine(
     settings.database_url,

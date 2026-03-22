@@ -54,8 +54,8 @@ export function FavoritesPage() {
   return (
     <div className="space-y-5">
       <header>
-        <h1 className="text-2xl font-bold text-white">Liked songs</h1>
-        <p className="mt-1 text-sm text-spotify-muted">{tracks.length} saved tracks</p>
+        <h1 className="text-2xl font-bold text-white">Hype</h1>
+        <p className="mt-1 text-sm text-spotify-muted">{tracks.length} в сохранённых</p>
       </header>
 
       {loading && <TrackListSkeleton rows={8} />}
@@ -68,7 +68,7 @@ export function FavoritesPage() {
         favoriteIds={favoriteIds}
         onPlay={(_t, index) => setQueue(tracks, index)}
         onToggleFavorite={toggleFavorite}
-        emptyLabel="Save tracks you love — they’ll show up here."
+        emptyLabel="Добавляй треки в Hype — они появятся здесь."
       />
       )}
     </div>
