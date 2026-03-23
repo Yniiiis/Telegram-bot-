@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 
-import { getSimilarTracks, recordPlay, streamUrl } from "../lib/api";
+import { getSimilarTracks, isNgrokApiBase, recordPlay, streamUrl } from "../lib/api";
 import { useAuthStore } from "../store/authStore";
 import { useMediaSession } from "./useMediaSession";
 import { useCurrentTrack, usePlayerStore } from "../store/playerStore";
@@ -45,12 +45,47 @@ export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
 
     streamErrorRetries.current = 0;
     const url = streamUrl(track.id, token);
-    if (el.src !== url) {
-      clearPlaybackError();
-      el.src = url;
-      el.load();
+
+    if (!isNgrokApiBase()) {
+      if (el.src !== url) {
+        clearPlaybackError();
+        el.src = url;
+        el.load();
+      }
+      return;
     }
-  }, [track?.id, token, clearPlaybackError]);
+
+    const ac = new AbortController();
+    let cancelled = false;
+    clearPlaybackError();
+
+    void (async () => {
+      try {
+        const res = await fetch(url, {
+          headers: { "ngrok-skip-browser-warning": "1" },
+          signal: ac.signal,
+        });
+        if (!res.ok) throw new Error(String(res.status));
+        const blob = await res.blob();
+        if (cancelled || ac.signal.aborted) return;
+        if (el.src.startsWith("blob:")) URL.revokeObjectURL(el.src);
+        el.src = URL.createObjectURL(blob);
+        el.load();
+        if (usePlayerStore.getState().isPlaying) void el.play().catch(() => {});
+      } catch (e) {
+        if (cancelled || ac.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) return;
+        setPlaybackError(
+          "Audio cannot stream through free ngrok from the player. Use a public API (no browser warning) for music, or test playback on localhost.",
+        );
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      ac.abort();
+      if (el.src.startsWith("blob:")) URL.revokeObjectURL(el.src);
+    };
+  }, [track?.id, token, clearPlaybackError, setPlaybackError]);
 
   useEffect(() => {
     const el = audioRef.current;
@@ -70,6 +105,7 @@ export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
       const st = usePlayerStore.getState();
       if (st.queue[st.index]?.id !== track.id) return false;
       if (!el.src) return false;
+      if (el.src.startsWith("blob:")) return true;
       try {
         const path = new URL(el.src, window.location.origin).pathname;
         return path.includes(`/stream/${track.id}`);

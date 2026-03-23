@@ -5,6 +5,11 @@ function envApiBase(): string {
   return (import.meta.env.VITE_API_BASE_URL || "").trim().replace(/\/$/, "");
 }
 
+/** True when the built-in API URL is an ngrok tunnel (free tier blocks `<audio src>` without extra headers). */
+export function isNgrokApiBase(): boolean {
+  return /ngrok/i.test(envApiBase());
+}
+
 function isGithubPagesHost(): boolean {
   return typeof window !== "undefined" && window.location.hostname.endsWith("github.io");
 }
