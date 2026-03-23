@@ -1,10 +1,74 @@
 import type { AuthUser, PlaylistDetail, PlaylistSummary, Track } from "../types";
 
-const base = () => import.meta.env.VITE_API_BASE_URL || "/api";
+/** From CI / .env at build time; no trailing slash. */
+function envApiBase(): string {
+  return (import.meta.env.VITE_API_BASE_URL || "").trim().replace(/\/$/, "");
+}
+
+function isGithubPagesHost(): boolean {
+  return typeof window !== "undefined" && window.location.hostname.endsWith("github.io");
+}
+
+/**
+ * Dev: Vite proxies `/api` → backend.
+ * Prod: use `VITE_API_BASE_URL` (full `https://…` to FastAPI). On `*.github.io`, relative `/api`
+ * would hit GitHub’s servers (405/HTML), not your API — so we require an explicit URL.
+ */
+function base(): string {
+  const fromEnv = envApiBase();
+  if (fromEnv) return fromEnv;
+  if (import.meta.env.DEV) return "/api";
+  return "/api";
+}
+
+function ghPagesNeedApiMessage(): string {
+  const origin = typeof window !== "undefined" ? window.location.origin : "your GitHub Pages site";
+  return (
+    "This build is on GitHub Pages but VITE_API_BASE_URL was not set when the site was built. " +
+    "In the repo: Settings → Secrets and variables → Actions → Variables → add VITE_API_BASE_URL " +
+    "with your public FastAPI URL (https://…, no trailing slash). On the API, allow CORS for " +
+    `${origin}. Then redeploy the Pages workflow.`
+  );
+}
+
+/** Call before Telegram auth on static hosting. */
+export function assertProductionApiReachable(): void {
+  if (!import.meta.env.PROD || typeof window === "undefined") return;
+  if (!isGithubPagesHost()) return;
+  if (envApiBase()) return;
+  throw new Error(ghPagesNeedApiMessage());
+}
 
 function authHeader(token: string | null): HeadersInit {
   if (!token) return {};
   return { Authorization: `Bearer ${token}` };
+}
+
+/** Free ngrok interstitial — skip for programmatic fetches (Telegram WebView). */
+function ngrokBypassHeaders(): Record<string, string> {
+  const b = envApiBase();
+  if (!b || !/^https?:\/\//i.test(b)) return {};
+  try {
+    const host = new URL(b).hostname;
+    if (host.includes("ngrok-free.") || host.endsWith(".ngrok.io") || host.includes("ngrok")) {
+      return { "ngrok-skip-browser-warning": "1" };
+    }
+  } catch {
+    /* ignore */
+  }
+  return {};
+}
+
+function mergeHeaders(extra?: HeadersInit): Headers {
+  const h = new Headers(extra as HeadersInit);
+  for (const [k, v] of Object.entries(ngrokBypassHeaders())) {
+    h.set(k, v);
+  }
+  return h;
+}
+
+async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  return fetch(input, { ...init, headers: mergeHeaders(init?.headers) });
 }
 
 export class ApiError extends Error {
@@ -26,6 +90,13 @@ async function parseJson<T>(res: Response): Promise<T> {
     const text = await res.text();
     if (!text.trim()) {
       throw new ApiError(res.statusText || "Request failed", res.status);
+    }
+    if (res.status === 405 || /<html[\s>]/i.test(text)) {
+      throw new ApiError(
+        "The server returned HTML or 405 instead of JSON — the request did not reach your FastAPI. " +
+          "On GitHub Pages you must set VITE_API_BASE_URL to your API’s HTTPS origin and redeploy.",
+        res.status,
+      );
     }
     try {
       const parsed = JSON.parse(text) as { detail?: unknown };
@@ -51,7 +122,8 @@ export async function authTelegram(initData: string): Promise<{
   access_token: string;
   user: AuthUser;
 }> {
-  const res = await fetch(`${base()}/auth/telegram`, {
+  assertProductionApiReachable();
+  const res = await apiFetch(`${base()}/auth/telegram`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ init_data: initData }),
@@ -65,7 +137,7 @@ export async function authDev(): Promise<{
   user: AuthUser;
 } | null> {
   try {
-    const res = await fetch(`${base()}/auth/dev`, { method: "POST" });
+    const res = await apiFetch(`${base()}/auth/dev`, { method: "POST" });
     if (res.status === 404) return null;
     if (!res.ok) return null;
     return parseJson(res);
@@ -109,7 +181,7 @@ export async function searchTracksPage(
     params.set("max_duration_sec", String(filters.max_duration_sec));
   }
   if (opts?.artistFocus) params.set("artist_focus", "true");
-  const res = await fetch(`${base()}/search?${params}`, {
+  const res = await apiFetch(`${base()}/search?${params}`, {
     headers: { ...authHeader(token) },
   });
   return parseJson<SearchPageResult>(res);
@@ -134,13 +206,13 @@ export interface DiscoveryMetaResponse {
 }
 
 export async function getDiscoveryMeta(token: string): Promise<DiscoveryMetaResponse> {
-  const res = await fetch(`${base()}/discovery/meta`, { headers: { ...authHeader(token) } });
+  const res = await apiFetch(`${base()}/discovery/meta`, { headers: { ...authHeader(token) } });
   return parseJson<DiscoveryMetaResponse>(res);
 }
 
 export async function getNewReleases(token: string, limit = 20): Promise<Track[]> {
   const params = new URLSearchParams({ limit: String(limit) });
-  const res = await fetch(`${base()}/discovery/new-releases?${params}`, {
+  const res = await apiFetch(`${base()}/discovery/new-releases?${params}`, {
     headers: { ...authHeader(token) },
   });
   const data = await parseJson<{ tracks: Track[] }>(res);
@@ -160,7 +232,7 @@ export async function getSimilarTracks(
   limit = 16,
 ): Promise<Track[]> {
   const params = new URLSearchParams({ track_id: trackId, limit: String(limit) });
-  const res = await fetch(`${base()}/recommendations/similar?${params}`, {
+  const res = await apiFetch(`${base()}/recommendations/similar?${params}`, {
     headers: { ...authHeader(token) },
   });
   const data = await parseJson<{ tracks: Track[] }>(res);
@@ -173,7 +245,7 @@ export async function getDiscoveryPicks(
 ): Promise<DiscoveryPicksResponse> {
   const params = new URLSearchParams({ mode: opts.mode, limit: "18" });
   if (opts.context) params.set("context", opts.context);
-  const res = await fetch(`${base()}/discovery/picks?${params}`, {
+  const res = await apiFetch(`${base()}/discovery/picks?${params}`, {
     headers: { ...authHeader(token) },
   });
   return parseJson<DiscoveryPicksResponse>(res);
@@ -181,7 +253,7 @@ export async function getDiscoveryPicks(
 
 export async function recordPlay(token: string, trackId: string): Promise<void> {
   try {
-    const res = await fetch(`${base()}/history/play`, {
+    const res = await apiFetch(`${base()}/history/play`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeader(token) },
       body: JSON.stringify({ track_id: trackId }),
@@ -194,7 +266,7 @@ export async function recordPlay(token: string, trackId: string): Promise<void> 
 
 export async function getRecentTracks(token: string, limit = 20): Promise<Track[]> {
   const params = new URLSearchParams({ limit: String(limit) });
-  const res = await fetch(`${base()}/history/recent?${params}`, {
+  const res = await apiFetch(`${base()}/history/recent?${params}`, {
     headers: { ...authHeader(token) },
   });
   const data = await parseJson<{ tracks: Track[] }>(res);
@@ -202,13 +274,13 @@ export async function getRecentTracks(token: string, limit = 20): Promise<Track[
 }
 
 export async function getFavorites(token: string): Promise<Track[]> {
-  const res = await fetch(`${base()}/favorites`, { headers: { ...authHeader(token) } });
+  const res = await apiFetch(`${base()}/favorites`, { headers: { ...authHeader(token) } });
   const data = await parseJson<{ tracks: Track[] }>(res);
   return data.tracks;
 }
 
 export async function addFavorite(token: string, trackId: string): Promise<void> {
-  const res = await fetch(`${base()}/favorites`, {
+  const res = await apiFetch(`${base()}/favorites`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeader(token) },
     body: JSON.stringify({ track_id: trackId }),
@@ -221,7 +293,7 @@ export async function addFavorite(token: string, trackId: string): Promise<void>
 }
 
 export async function removeFavorite(token: string, trackId: string): Promise<void> {
-  const res = await fetch(`${base()}/favorites/${trackId}`, {
+  const res = await apiFetch(`${base()}/favorites/${trackId}`, {
     method: "DELETE",
     headers: { ...authHeader(token) },
   });
@@ -232,12 +304,12 @@ export async function removeFavorite(token: string, trackId: string): Promise<vo
 }
 
 export async function listPlaylists(token: string): Promise<PlaylistSummary[]> {
-  const res = await fetch(`${base()}/playlists`, { headers: { ...authHeader(token) } });
+  const res = await apiFetch(`${base()}/playlists`, { headers: { ...authHeader(token) } });
   return parseJson(res);
 }
 
 export async function createPlaylist(token: string, name: string): Promise<PlaylistSummary> {
-  const res = await fetch(`${base()}/playlists`, {
+  const res = await apiFetch(`${base()}/playlists`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeader(token) },
     body: JSON.stringify({ name }),
@@ -246,12 +318,12 @@ export async function createPlaylist(token: string, name: string): Promise<Playl
 }
 
 export async function getPlaylist(token: string, id: string): Promise<PlaylistDetail> {
-  const res = await fetch(`${base()}/playlists/${id}`, { headers: { ...authHeader(token) } });
+  const res = await apiFetch(`${base()}/playlists/${id}`, { headers: { ...authHeader(token) } });
   return parseJson(res);
 }
 
 export async function renamePlaylist(token: string, id: string, name: string): Promise<void> {
-  const res = await fetch(`${base()}/playlists/${id}`, {
+  const res = await apiFetch(`${base()}/playlists/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", ...authHeader(token) },
     body: JSON.stringify({ name }),
@@ -263,7 +335,7 @@ export async function renamePlaylist(token: string, id: string, name: string): P
 }
 
 export async function deletePlaylist(token: string, id: string): Promise<void> {
-  const res = await fetch(`${base()}/playlists/${id}`, {
+  const res = await apiFetch(`${base()}/playlists/${id}`, {
     method: "DELETE",
     headers: { ...authHeader(token) },
   });
@@ -278,7 +350,7 @@ export async function addTrackToPlaylist(
   playlistId: string,
   trackId: string,
 ): Promise<void> {
-  const res = await fetch(`${base()}/playlists/${playlistId}/tracks`, {
+  const res = await apiFetch(`${base()}/playlists/${playlistId}/tracks`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeader(token) },
     body: JSON.stringify({ track_id: trackId }),
@@ -295,7 +367,7 @@ export async function removeTrackFromPlaylist(
   playlistId: string,
   trackId: string,
 ): Promise<void> {
-  const res = await fetch(`${base()}/playlists/${playlistId}/tracks/${trackId}`, {
+  const res = await apiFetch(`${base()}/playlists/${playlistId}/tracks/${trackId}`, {
     method: "DELETE",
     headers: { ...authHeader(token) },
   });
@@ -307,7 +379,13 @@ export async function removeTrackFromPlaylist(
 
 export function streamUrl(trackId: string, token: string): string {
   const b = base();
-  const u = new URL(`${b}/stream/${trackId}`, window.location.origin);
+  const path = `/stream/${trackId}`;
+  if (b.startsWith("http://") || b.startsWith("https://")) {
+    const u = new URL(`${b.replace(/\/$/, "")}${path}`);
+    u.searchParams.set("token", token);
+    return u.toString();
+  }
+  const u = new URL(`${b.replace(/\/$/, "")}${path}`, window.location.origin);
   u.searchParams.set("token", token);
   return u.toString();
 }
