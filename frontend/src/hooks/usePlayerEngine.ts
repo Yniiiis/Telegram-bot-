@@ -1,9 +1,28 @@
 import { useEffect, useRef } from "react";
 
 import { getSimilarTracks, isNgrokApiBase, recordPlay, streamUrl } from "../lib/api";
+import { ensureNgrokStreamSw } from "../lib/ngrokStreamSw";
 import { useAuthStore } from "../store/authStore";
 import { useMediaSession } from "./useMediaSession";
 import { useCurrentTrack, usePlayerStore } from "../store/playerStore";
+
+function playWhenBuffered(
+  el: HTMLAudioElement,
+  setPlaybackError: (msg: string) => void,
+): void {
+  const tryPlay = () => {
+    if (!usePlayerStore.getState().isPlaying) return;
+    void el.play().catch(() => {
+      setPlaybackError("Playback failed to start. The track may be unavailable.");
+      usePlayerStore.getState().pause();
+    });
+  };
+  if (el.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+    tryPlay();
+    return;
+  }
+  el.addEventListener("canplay", tryPlay, { once: true });
+}
 
 /** Binds hidden <audio> to Zustand player state. */
 export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
@@ -51,6 +70,7 @@ export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
         clearPlaybackError();
         el.src = url;
         el.load();
+        playWhenBuffered(el, setPlaybackError);
       }
       return;
     }
@@ -61,6 +81,17 @@ export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
 
     void (async () => {
       try {
+        const swOk = await ensureNgrokStreamSw();
+        if (cancelled || ac.signal.aborted) return;
+
+        if (swOk) {
+          if (el.src.startsWith("blob:")) URL.revokeObjectURL(el.src);
+          el.src = url;
+          el.load();
+          playWhenBuffered(el, setPlaybackError);
+          return;
+        }
+
         const res = await fetch(url, {
           headers: { "ngrok-skip-browser-warning": "1" },
           signal: ac.signal,
@@ -71,11 +102,11 @@ export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
         if (el.src.startsWith("blob:")) URL.revokeObjectURL(el.src);
         el.src = URL.createObjectURL(blob);
         el.load();
-        if (usePlayerStore.getState().isPlaying) void el.play().catch(() => {});
+        playWhenBuffered(el, setPlaybackError);
       } catch (e) {
         if (cancelled || ac.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) return;
         setPlaybackError(
-          "Audio cannot stream through free ngrok from the player. Use a public API (no browser warning) for music, or test playback on localhost.",
+          "Audio cannot load through ngrok. Allow the service worker (reload once) or use a public API URL without the ngrok browser warning.",
         );
       }
     })();
@@ -175,10 +206,7 @@ export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
     const el = audioRef.current;
     if (!el || !track) return;
     if (isPlaying) {
-      void el.play().catch(() => {
-        setPlaybackError("Playback failed to start. The track may be unavailable.");
-        usePlayerStore.getState().pause();
-      });
+      playWhenBuffered(el, setPlaybackError);
     } else {
       el.pause();
     }
