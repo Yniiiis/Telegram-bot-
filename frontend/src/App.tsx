@@ -23,6 +23,15 @@ function previewAuthEnabled(): boolean {
   return v === "1" || v === "true";
 }
 
+/** Full public URL for this build (GitHub Pages path, Vercel root, etc.) — for BotFather / debugging. */
+function miniAppPublicUrl(): string {
+  if (typeof window === "undefined") return "";
+  const base = import.meta.env.BASE_URL || "/";
+  if (base === "/") return `${window.location.origin}/`;
+  const normalized = base.endsWith("/") ? base.slice(0, -1) : base;
+  return `${window.location.origin}${normalized}/`;
+}
+
 export default function App() {
   const token = useAuthStore((s) => s.token);
   const setSession = useAuthStore((s) => s.setSession);
@@ -102,9 +111,9 @@ export default function App() {
         <p className="text-sm text-spotify-muted">
           {import.meta.env.PROD && !previewAuthEnabled() ? (
             <>
-              Open the app with your bot&apos;s <strong>Web App</strong> button inside Telegram. If you open the
-              Vercel URL in a normal browser, Telegram does not pass login data. In BotFather, the Mini App URL must
-              be this same HTTPS address.
+              Open the app with your bot&apos;s <strong>Web App</strong> button inside Telegram. If you open this site
+              in a normal browser, Telegram does not pass login data. In @BotFather, the Mini App URL must be the same
+              HTTPS address as below.
             </>
           ) : (
             <>
@@ -129,13 +138,20 @@ export default function App() {
           )}
         </p>
         {error && <p className="text-sm text-red-400">{error}</p>}
+        {import.meta.env.PROD && !previewAuthEnabled() && (
+          <p className="max-w-md break-all text-xs text-spotify-muted">
+            Mini App URL for BotFather:{" "}
+            <code className="text-spotify-accent">{miniAppPublicUrl()}</code>
+          </p>
+        )}
         {!error && isTelegramWebApp() && (
           <p className="max-w-md text-xs text-amber-200/90">
             If you opened this from Telegram but still see this screen, register your app URL in @BotFather:
             <span className="text-spotify-muted"> /mybots → your bot → Bot Settings → </span>
             <strong>Mini App</strong>
             <span className="text-spotify-muted"> → enable / add domain </span>
-            (your <code className="text-spotify-accent">*.vercel.app</code> host). Then open the app using the
+            (e.g. <code className="text-spotify-accent">*.github.io</code> for GitHub Pages,{" "}
+            <code className="text-spotify-accent">*.vercel.app</code>, or your own domain). Then open the app using the
             bot&apos;s <strong>Web App</strong> keyboard button, not a plain browser link.
           </p>
         )}
