@@ -1,9 +1,7 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
-declare const process: { env: Record<string, string | undefined> };
-
-// GitHub Pages project site: set VITE_BASE_PATH=/repo-name/ (e.g. /telegram-music-bot-/)
+// GitHub Pages project site: set VITE_BASE_PATH=/repo-name/ (e.g. /Telegram-bot-/)
 const base = (process.env.VITE_BASE_PATH || "/").replace(/\/?$/, "/");
 
 export default defineConfig({
