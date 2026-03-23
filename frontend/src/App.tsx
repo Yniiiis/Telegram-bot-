@@ -8,7 +8,15 @@ import { FavoritesPage } from "./pages/FavoritesPage";
 import { HomePage } from "./pages/HomePage";
 import { PlaylistDetailPage } from "./pages/PlaylistDetailPage";
 import { PlaylistsPage } from "./pages/PlaylistsPage";
+import { ArtistPage } from "./pages/ArtistPage";
 import { SearchPage } from "./pages/SearchPage";
+
+function routerBasename(): string | undefined {
+  const b = import.meta.env.BASE_URL;
+  if (!b || b === "/") return undefined;
+  const trimmed = b.replace(/\/$/, "");
+  return trimmed || undefined;
+}
 
 function previewAuthEnabled(): boolean {
   const v = import.meta.env.VITE_PREVIEW_AUTH;
@@ -136,11 +144,12 @@ export default function App() {
   }
 
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={routerBasename()}>
       <Routes>
         <Route element={<AppShell />}>
           <Route path="/" element={<HomePage />} />
           <Route path="/search" element={<SearchPage />} />
+          <Route path="/artist" element={<ArtistPage />} />
           <Route path="/favorites" element={<FavoritesPage />} />
           <Route path="/playlists" element={<PlaylistsPage />} />
           <Route path="/playlists/:id" element={<PlaylistDetailPage />} />

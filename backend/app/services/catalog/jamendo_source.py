@@ -1,3 +1,5 @@
+import datetime
+
 import httpx
 
 from app.config import settings
@@ -14,6 +16,20 @@ def _license_short_from_item(item: dict) -> str | None:
     cc = item.get("license_ccurl")
     if isinstance(cc, str) and "/" in cc.rstrip("/"):
         return cc.rstrip("/").rsplit("/", 1)[-1] or None
+    return None
+
+
+def _released_ts_from_item(item: dict) -> int | None:
+    raw = item.get("releasedate") or item.get("album_releasedate")
+    if not raw:
+        return None
+    s = str(raw).strip()[:10]
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+        try:
+            d = datetime.date.fromisoformat(s[:10])
+            return int(datetime.datetime(d.year, d.month, d.day, tzinfo=datetime.timezone.utc).timestamp())
+        except ValueError:
+            return None
     return None
 
 
@@ -36,6 +52,7 @@ def _external_track_from_jamendo_item(item: dict) -> ExternalTrack | None:
         cover_url=item.get("image") or item.get("album_image"),
         license_url=license_url,
         license_short=_license_short_from_item(item),
+        released_ts=_released_ts_from_item(item),
     )
 
 

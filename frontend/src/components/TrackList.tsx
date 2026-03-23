@@ -8,6 +8,8 @@ interface TrackListProps {
   activeId?: string | null;
   favoriteIds?: Set<string>;
   onPlay: (track: Track, index: number) => void;
+  /** Tap artist name → artist page (does not start playback). */
+  onArtistClick?: (artist: string) => void;
   onToggleFavorite?: (track: Track) => void;
   /** When set, show remove control instead of Hype (e.g. playlist editing). */
   onRemoveFromList?: (track: Track) => void;
@@ -19,6 +21,7 @@ export function TrackList({
   activeId,
   favoriteIds,
   onPlay,
+  onArtistClick,
   onToggleFavorite,
   onRemoveFromList,
   emptyLabel = "Nothing here yet",
@@ -50,7 +53,20 @@ export function TrackList({
                 >
                   {track.title}
                 </p>
-                <p className="truncate text-xs text-spotify-muted">{track.artist}</p>
+                {onArtistClick ? (
+                  <button
+                    type="button"
+                    className="block w-full truncate text-left text-xs text-spotify-muted hover:text-spotify-accent hover:underline"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onArtistClick(track.artist);
+                    }}
+                  >
+                    {track.artist}
+                  </button>
+                ) : (
+                  <p className="truncate text-xs text-spotify-muted">{track.artist}</p>
+                )}
               </div>
               {track.duration_sec != null && (
                 <span className="shrink-0 tabular-nums text-xs text-spotify-muted">

@@ -14,3 +14,7 @@ class ExternalTrack:
     license_url: str | None = None
     """Short license label for display (e.g. cc-by-nc)."""
     license_short: str | None = None
+    """Last.fm listeners (popularity hint for ranking / rotation)."""
+    listeners: int | None = None
+    """Unix time of release when known (novelty hint)."""
+    released_ts: int | None = None

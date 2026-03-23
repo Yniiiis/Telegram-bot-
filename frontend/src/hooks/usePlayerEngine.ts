@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 
-import { recordPlay, streamUrl } from "../lib/api";
+import { getSimilarTracks, recordPlay, streamUrl } from "../lib/api";
 import { useAuthStore } from "../store/authStore";
 import { useMediaSession } from "./useMediaSession";
 import { useCurrentTrack, usePlayerStore } from "../store/playerStore";
@@ -17,11 +17,27 @@ export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
   const next = usePlayerStore((s) => s.next);
   const clearPlaybackError = usePlayerStore((s) => s.clearPlaybackError);
   const setPlaybackError = usePlayerStore((s) => s.setPlaybackError);
+  const mergeSimilarAfterCurrent = usePlayerStore((s) => s.mergeSimilarAfterCurrent);
 
   useEffect(() => {
     if (!track?.id || !token) return;
     void recordPlay(token, track.id);
   }, [track?.id, token]);
+
+  useEffect(() => {
+    if (!track?.id || !token) return;
+    const ac = new AbortController();
+    void (async () => {
+      try {
+        const rows = await getSimilarTracks(token, track.id, 16);
+        if (ac.signal.aborted || !rows.length) return;
+        mergeSimilarAfterCurrent(rows);
+      } catch {
+        /* radio suggestions are optional */
+      }
+    })();
+    return () => ac.abort();
+  }, [track?.id, token, mergeSimilarAfterCurrent]);
 
   useEffect(() => {
     const el = audioRef.current;
@@ -49,7 +65,6 @@ export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
         setTimes(el.currentTime, Number.isFinite(el.duration) ? el.duration : 0);
       });
     };
-    const onEnded = () => next();
 
     const isStillThisTrack = () => {
       const st = usePlayerStore.getState();
@@ -61,6 +76,31 @@ export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
       } catch {
         return el.src.includes(track.id);
       }
+    };
+
+    const onEnded = () => {
+      if (!isStillThisTrack()) return;
+      const dur = el.duration;
+      const cur = el.currentTime;
+      // Some WebViews fire `ended` immediately on decode/network quirks even though the track did not play through.
+      const looksPremature =
+        Number.isFinite(dur) &&
+        dur >= 2 &&
+        (cur < 1 || cur < dur - 0.5);
+      if (looksPremature) {
+        if (streamErrorRetries.current < 1) {
+          streamErrorRetries.current += 1;
+          clearPlaybackError();
+          el.load();
+          const st = usePlayerStore.getState();
+          if (st.isPlaying) void el.play().catch(() => {});
+          return;
+        }
+        setPlaybackError("Playback stopped right after start. Try again or pick another track.");
+        usePlayerStore.getState().pause();
+        return;
+      }
+      next();
     };
 
     const onError = () => {

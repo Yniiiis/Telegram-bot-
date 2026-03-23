@@ -22,6 +22,8 @@ interface PlayerState {
   resetProgress: () => void;
   setPlaybackError: (message: string | null) => void;
   clearPlaybackError: () => void;
+  /** Insert radio-style suggestions right after the current track (deduped by id). */
+  mergeSimilarAfterCurrent: (tracks: Track[]) => void;
 }
 
 export const usePlayerStore = create<PlayerState>((set, get) => ({
@@ -100,6 +102,21 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   setPlaybackError: (message) => set({ playbackError: message }),
 
   clearPlaybackError: () => set({ playbackError: null }),
+
+  mergeSimilarAfterCurrent: (incoming) =>
+    set((s) => {
+      if (!incoming.length) return s;
+      const i = s.index;
+      if (i < 0 || i >= s.queue.length) return s;
+      const upcoming = s.queue.length - (i + 1);
+      if (upcoming >= 12) return s;
+      const seen = new Set(s.queue.map((t) => t.id));
+      const add = incoming.filter((t) => !seen.has(t.id)).slice(0, 14);
+      if (!add.length) return s;
+      const head = s.queue.slice(0, i + 1);
+      const tail = s.queue.slice(i + 1);
+      return { queue: [...head, ...add, ...tail] };
+    }),
 }));
 
 export function useCurrentTrack(): Track | null {

@@ -233,7 +233,16 @@ def deep_query_variants(query: str, *, max_variants: int) -> list[str]:
 def _source_priority_map() -> dict[str, int]:
     raw = (settings.search_source_priority or "").strip()
     if not raw:
-        order = ["jamendo", "soundcloud", "youtube_music", "zaycev", "hitmotop", "mock"]
+        order = [
+            "zaycev",
+            "hitmotop",
+            "lastfm",
+            "bandcamp",
+            "jamendo",
+            "soundcloud",
+            "youtube_music",
+            "mock",
+        ]
     else:
         order = [p.strip().lower() for p in raw.split(",") if p.strip()]
     return {name: i for i, name in enumerate(order)}

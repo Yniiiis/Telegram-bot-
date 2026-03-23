@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import logging
 from collections.abc import Iterable
@@ -14,9 +15,12 @@ from app.config import settings
 from app.models.featured_new_release import FeaturedNewRelease
 from app.models.track import Track
 from app.services.catalog import search_catalog
+from app.services.catalog.bandcamp_source import BandcampCatalogSource
 from app.services.catalog.engine import SOURCE_REGISTRY
 from app.services.catalog.jamendo_source import JamendoCatalogSource
+from app.services.catalog.lastfm_source import WEEKDAY_MOOD_TAGS, collect_lastfm_mood_tracks
 from app.services.external_track import ExternalTrack
+from app.services.track_availability import filter_tracks_by_availability
 from app.services.track_upsert import upsert_external_tracks
 
 logger = logging.getLogger(__name__)
@@ -104,7 +108,8 @@ def catalog_source_ids() -> list[str]:
 
 def weekday_mood_query() -> str:
     wd = datetime.date.today().weekday()
-    return _WEEKDAY_MOOD_QUERIES[wd % len(_WEEKDAY_MOOD_QUERIES)]
+    tags = WEEKDAY_MOOD_TAGS[wd % len(WEEKDAY_MOOD_TAGS)]
+    return f"Last.fm · {', '.join(tags)}"
 
 
 def parse_sources_filter(raw: str | None) -> set[str] | None:
@@ -183,13 +188,19 @@ async def collect_discovery_picks(
         display_name = _CONTEXT_LABELS[cid]
         ctx_id = cid
     else:
-        wd = datetime.date.today().weekday()
-        i = wd % len(_WEEKDAY_MOOD_QUERIES)
-        primary = _WEEKDAY_MOOD_QUERIES[i]
-        alt = _WEEKDAY_ALT_QUERIES[i % len(_WEEKDAY_ALT_QUERIES)]
-        seeds = [primary, alt, f"{primary} mix"]
-        display_name = primary
-        m = "weekday"
+        # «День недели»: только Last.fm (чарты + теги) → воспроизведение через Zaycev/Hitmotop.
+        merged_lf, label_lf = await collect_lastfm_mood_tracks(client, limit=limit)
+        out_lf: list[ExternalTrack] = []
+        seen_fp_lf: set[str] = set()
+        for t in merged_lf:
+            fp = track_fingerprint(t)
+            if fp in seen_fp_lf:
+                continue
+            seen_fp_lf.add(fp)
+            out_lf.append(sanitize_track(normalize_track_metadata(t, query=label_lf)))
+            if len(out_lf) >= limit:
+                break
+        return out_lf, label_lf, None
 
     n_seeds = max(1, len(seeds))
     per_seed = max(12, min(30, (limit * 3) // n_seeds + 10))
@@ -225,22 +236,39 @@ async def collect_discovery_picks(
 
 
 async def collect_new_release_candidates(client: httpx.AsyncClient) -> list[ExternalTrack]:
-    """Pull recent-style tracks from Jamendo tags + one merged catalog search."""
+    """Harvest «new» style tracks across Jamendo, multi-seed search, Bandcamp, mock."""
     merged: list[ExternalTrack] = []
 
     jamendo = JamendoCatalogSource()
-    tags = ["pop", "electronic", "hiphop", "rock", "indie", "jazz"]
-    merged.extend(await jamendo.recent_by_tags(client, tags=tags, per_tag=7))
+    tags = ["pop", "electronic", "hiphop", "rock", "indie", "jazz", "ambient", "folk", "metal"]
+    merged.extend(await jamendo.recent_by_tags(client, tags=tags, per_tag=6))
+
+    extra_seeds = [
+        "new releases",
+        "new single 2025",
+        "fresh music",
+        "новинки музыки",
+        "new album",
+        settings.discovery_new_seed_query,
+    ]
+
+    async def _seed(s: str) -> list[ExternalTrack]:
+        try:
+            return await search_catalog(client, s, offset=0, limit=14)
+        except Exception as exc:
+            logger.warning("new-release seed %r failed: %s", s, exc)
+            return []
+
+    batches = await asyncio.gather(*[_seed(s) for s in extra_seeds], return_exceptions=True)
+    for b in batches:
+        if isinstance(b, list):
+            merged.extend(b)
 
     try:
-        merged.extend(await search_catalog(client, "new single", offset=0, limit=22))
+        bc = BandcampCatalogSource()
+        merged.extend(await bc.search(client, "new music", offset=0, limit=12))
     except Exception as exc:
-        logger.warning("discovery broad search failed: %s", exc)
-
-    try:
-        merged.extend(await search_catalog(client, settings.discovery_new_seed_query, offset=0, limit=18))
-    except Exception as exc:
-        logger.warning("discovery seed search failed: %s", exc)
+        logger.debug("bandcamp new-release harvest: %s", exc)
 
     mock = SOURCE_REGISTRY.get("mock")
     if mock is not None:
@@ -261,6 +289,7 @@ async def refresh_featured_new_releases(db: AsyncSession, client: httpx.AsyncCli
         return 0
 
     tracks = await upsert_external_tracks(db, candidates[: settings.new_releases_store_limit])
+    tracks = await filter_tracks_by_availability(client, tracks)
     await db.execute(delete(FeaturedNewRelease))
     for i, tr in enumerate(tracks):
         db.add(FeaturedNewRelease(track_id=tr.id, position=i))

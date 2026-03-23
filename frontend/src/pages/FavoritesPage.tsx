@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 
 import { TrackListSkeleton } from "../components/Skeleton";
 import { TrackList } from "../components/TrackList";
@@ -8,6 +9,7 @@ import { usePlayerStore } from "../store/playerStore";
 import type { Track } from "../types";
 
 export function FavoritesPage() {
+  const navigate = useNavigate();
   const token = useAuthStore((s) => s.token);
   const [tracks, setTracks] = useState<Track[]>([]);
   const [loading, setLoading] = useState(true);
@@ -68,6 +70,10 @@ export function FavoritesPage() {
         favoriteIds={favoriteIds}
         onPlay={(_t, index) => setQueue(tracks, index)}
         onToggleFavorite={toggleFavorite}
+        onArtistClick={(artist) => {
+          const t = artist.trim();
+          if (t) navigate(`/artist?name=${encodeURIComponent(t)}`);
+        }}
         emptyLabel="Добавляй треки в Hype — они появятся здесь."
       />
       )}

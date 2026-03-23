@@ -74,7 +74,10 @@ async def stream_track(
             req_headers["Range"] = range_hdr
 
         client = httpx.AsyncClient(
-            timeout=httpx.Timeout(120.0, connect=30.0),
+            timeout=httpx.Timeout(
+                settings.stream_read_timeout_sec,
+                connect=settings.stream_connect_timeout_sec,
+            ),
             follow_redirects=True,
         )
         stream_cm = client.stream("GET", media_url, headers=req_headers)
@@ -194,7 +197,10 @@ async def stream_track(
         req_headers["Range"] = range_hdr
 
     client = httpx.AsyncClient(
-        timeout=httpx.Timeout(120.0, connect=15.0),
+        timeout=httpx.Timeout(
+            settings.stream_read_timeout_sec,
+            connect=settings.stream_connect_timeout_sec,
+        ),
         follow_redirects=True,
     )
     stream_cm = client.stream("GET", media_url, headers=req_headers)

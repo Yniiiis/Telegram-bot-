@@ -22,9 +22,11 @@ export function AppShell() {
         </main>
         <PlayerBar />
         <audio
+          key={track?.id ?? "idle"}
           ref={audioRef as RefObject<HTMLAudioElement>}
+          crossOrigin="anonymous"
           playsInline
-          preload="metadata"
+          preload="auto"
           className="hidden"
         />
         <BottomNav />

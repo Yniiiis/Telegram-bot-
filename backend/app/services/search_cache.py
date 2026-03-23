@@ -13,13 +13,14 @@ _lock = asyncio.Lock()
 _store: dict[str, tuple[float, list]] = {}
 
 
-def _key(query: str, offset: int, limit: int) -> str:
-    return f"{query.strip().lower()}\t{offset}\t{limit}"
+def _key(query: str, offset: int, limit: int, *, artist_focus: bool = False) -> str:
+    af = "1" if artist_focus else "0"
+    return f"{query.strip().lower()}\t{offset}\t{limit}\t{af}"
 
 
-async def get_cached(query: str, offset: int, limit: int) -> list | None:
+async def get_cached(query: str, offset: int, limit: int, *, artist_focus: bool = False) -> list | None:
     async with _lock:
-        k = _key(query, offset, limit)
+        k = _key(query, offset, limit, artist_focus=artist_focus)
         item = _store.get(k)
         if not item:
             return None
@@ -30,10 +31,12 @@ async def get_cached(query: str, offset: int, limit: int) -> list | None:
         return copy.deepcopy(rows)
 
 
-async def set_cached(query: str, offset: int, limit: int, rows: list) -> None:
+async def set_cached(
+    query: str, offset: int, limit: int, rows: list, *, artist_focus: bool = False
+) -> None:
     async with _lock:
         if len(_store) >= MAX_ENTRIES:
             # Drop arbitrary oldest half by clearing (simple; cache is best-effort)
             _store.clear()
-        k = _key(query, offset, limit)
+        k = _key(query, offset, limit, artist_focus=artist_focus)
         _store[k] = (time.monotonic() + TTL_SEC, copy.deepcopy(rows))

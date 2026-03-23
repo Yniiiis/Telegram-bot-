@@ -94,6 +94,7 @@ export async function searchTracksPage(
   offset: number,
   limit: number,
   filters?: SearchFilters,
+  opts?: { artistFocus?: boolean },
 ): Promise<SearchPageResult> {
   const params = new URLSearchParams({
     q,
@@ -107,6 +108,7 @@ export async function searchTracksPage(
   if (filters?.max_duration_sec != null && filters.max_duration_sec >= 0) {
     params.set("max_duration_sec", String(filters.max_duration_sec));
   }
+  if (opts?.artistFocus) params.set("artist_focus", "true");
   const res = await fetch(`${base()}/search?${params}`, {
     headers: { ...authHeader(token) },
   });
@@ -150,6 +152,19 @@ export interface DiscoveryPicksResponse {
   used_query: string;
   context_id: string | null;
   mode: string;
+}
+
+export async function getSimilarTracks(
+  token: string,
+  trackId: string,
+  limit = 16,
+): Promise<Track[]> {
+  const params = new URLSearchParams({ track_id: trackId, limit: String(limit) });
+  const res = await fetch(`${base()}/recommendations/similar?${params}`, {
+    headers: { ...authHeader(token) },
+  });
+  const data = await parseJson<{ tracks: Track[] }>(res);
+  return data.tracks;
 }
 
 export async function getDiscoveryPicks(

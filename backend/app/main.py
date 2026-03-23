@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.db.session import SessionLocal, init_db
-from app.routers import auth, discovery, favorites, history, playlists, search, stream, tracks
+from app.routers import auth, discovery, favorites, history, playlists, recommendations, search, stream, tracks
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +52,11 @@ app = FastAPI(title="Telegram Music API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    # JWT is in headers / ?token=, not cookies — False avoids invalid * + credentials pairs in strict WebViews.
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["content-length", "content-range", "accept-ranges"],
 )
 
 app.include_router(auth.router)
@@ -64,6 +66,7 @@ app.include_router(history.router)
 app.include_router(tracks.router)
 app.include_router(favorites.router)
 app.include_router(playlists.router)
+app.include_router(recommendations.router)
 app.include_router(stream.router)
 
 

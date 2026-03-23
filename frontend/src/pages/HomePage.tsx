@@ -21,6 +21,10 @@ import type { DailyContextMeta, Track } from "../types";
 
 export function HomePage() {
   const navigate = useNavigate();
+  const openArtist = (artist: string) => {
+    const t = artist.trim();
+    if (t) navigate(`/artist?name=${encodeURIComponent(t)}`);
+  };
   const token = useAuthStore((s) => s.token);
   const setQueue = usePlayerStore((s) => s.setQueue);
   const [q, setQ] = useState("");
@@ -179,7 +183,7 @@ export function HomePage() {
 
       <section>
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-white">Новинки с площадок</h2>
+          <h2 className="text-lg font-semibold text-white">New Hype</h2>
           <button
             type="button"
             onClick={() => void loadNew()}
@@ -188,9 +192,6 @@ export function HomePage() {
             Обновить
           </button>
         </div>
-        <p className="mb-2 text-xs text-spotify-muted">
-          Подборка обновляется в фоне из каталогов (Jamendo по дате, общий поиск и др.). Нужен запущенный API.
-        </p>
         {loadingNew && <TrackListSkeleton rows={4} />}
         {!loadingNew && newTracks.length === 0 && (
           <p className="text-sm text-spotify-muted">Пока пусто — подождите фоновое обновление или откройте поиск.</p>
@@ -201,6 +202,7 @@ export function HomePage() {
             activeId={activeId}
             favoriteIds={favoriteIds}
             onToggleFavorite={toggleFavorite}
+            onArtistClick={openArtist}
             onPlay={(_t, index) => setQueue(newTracks, index)}
             emptyLabel=""
           />
@@ -280,6 +282,7 @@ export function HomePage() {
             activeId={activeId}
             favoriteIds={favoriteIds}
             onToggleFavorite={toggleFavorite}
+            onArtistClick={openArtist}
             onPlay={(_t, index) => setQueue(recent, index)}
             emptyLabel=""
           />
@@ -305,6 +308,7 @@ export function HomePage() {
             activeId={activeId}
             favoriteIds={favoriteIds}
             onToggleFavorite={toggleFavorite}
+            onArtistClick={openArtist}
             onPlay={(_t, index) => setQueue(recs, index)}
             emptyLabel="Search something to get started"
           />

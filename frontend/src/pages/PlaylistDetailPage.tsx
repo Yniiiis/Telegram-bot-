@@ -66,6 +66,11 @@ export function PlaylistDetailPage() {
     }
   }
 
+  const openArtist = (artist: string) => {
+    const t = artist.trim();
+    if (t) navigate(`/artist?name=${encodeURIComponent(t)}`);
+  };
+
   async function trashPlaylist() {
     if (!token || !id) return;
     if (!confirm("Delete this playlist?")) return;
@@ -144,6 +149,7 @@ export function PlaylistDetailPage() {
         tracks={tracks}
         activeId={activeId}
         onPlay={(_t, index) => setQueue(tracks, index)}
+        onArtistClick={openArtist}
         onRemoveFromList={(track) => void removeTrack(track)}
         emptyLabel="This playlist is empty. Add songs from search."
       />

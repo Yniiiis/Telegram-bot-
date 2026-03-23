@@ -4,11 +4,14 @@ import logging
 import httpx
 
 from app.config import settings
+from app.services.catalog.bandcamp_source import BandcampCatalogSource
 from app.services.catalog.hitmotop_source import HitmotopCatalogSource
 from app.services.catalog.jamendo_source import JamendoCatalogSource
+from app.services.catalog.lastfm_source import LastFmCatalogSource
 from app.services.catalog.mock_source import MockCatalogSource
 from app.services.catalog.protocol import CatalogSource
 from app.services.catalog.relevance import rank_by_relevance
+from app.services.catalog.rotation import diversify_search_results
 from app.services.catalog.search_pipeline import (
     deep_query_variants,
     merge_dedupe_cross_source,
@@ -27,7 +30,10 @@ SOURCE_REGISTRY: dict[str, CatalogSource] = {
     "zaycev": ZaycevCatalogSource(),
     "hitmotop": HitmotopCatalogSource(),
     "jamendo": JamendoCatalogSource(),
+    "lastfm": LastFmCatalogSource(),
+    "bandcamp": BandcampCatalogSource(),
     "youtube_music": YoutubeMusicCatalogSource(),
+    "soundcloud": SoundCloudCatalogSource(),
     "mock": MockCatalogSource(),
 }
 
@@ -55,7 +61,12 @@ def _dedupe_best_score(
 
 
 async def search_catalog(
-    client: httpx.AsyncClient, query: str, *, offset: int = 0, limit: int = 20
+    client: httpx.AsyncClient,
+    query: str,
+    *,
+    offset: int = 0,
+    limit: int = 20,
+    artist_focus: bool = False,
 ) -> list[ExternalTrack]:
     q = query.strip()
     chain = _provider_chain()
@@ -73,7 +84,8 @@ async def search_catalog(
             logger.warning("unknown catalog provider %r — skipped", name)
             return []
 
-        if settings.search_deep_variants:
+        use_deep = settings.search_deep_variants and not artist_focus
+        if use_deep:
             variants = deep_query_variants(q, max_variants=settings.search_deep_max_variants)
         else:
             variants = [q]
@@ -108,9 +120,11 @@ async def search_catalog(
     merged = _dedupe_best_score(collected_batches)
     merged = merge_dedupe_cross_source(merged)
 
-    kept_scored = [(s, t) for s, t in merged if s >= min_keep][:limit]
+    pool_cap = min(90, max(limit * 4, limit + 20))
+    kept_scored = [(s, t) for s, t in merged if s >= min_keep][:pool_cap]
     if kept_scored:
-        return [
-            sanitize_track(normalize_track_metadata(t, query=q)) for _, t in kept_scored
-        ]
-    return [sanitize_track(normalize_track_metadata(t, query=q)) for _, t in merged[:limit]]
+        raw = [sanitize_track(normalize_track_metadata(t, query=q)) for _, t in kept_scored]
+    else:
+        raw = [sanitize_track(normalize_track_metadata(t, query=q)) for _, t in merged[:pool_cap]]
+    rotated = diversify_search_results(raw, q, offset=offset)
+    return rotated[:limit]

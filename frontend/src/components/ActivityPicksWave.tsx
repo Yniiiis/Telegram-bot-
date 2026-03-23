@@ -8,6 +8,7 @@ interface ActivityPicksWaveProps {
   favoriteIds: Set<string>;
   onPlay: (track: Track, index: number) => void;
   onToggleFavorite: (track: Track) => void;
+  onArtistClick?: (artist: string) => void;
 }
 
 /** Horizontal «wave» strip for activity-based picks (scroll + decorative bars). */
@@ -17,6 +18,7 @@ export function ActivityPicksWave({
   favoriteIds,
   onPlay,
   onToggleFavorite,
+  onArtistClick,
 }: ActivityPicksWaveProps) {
   if (tracks.length === 0) return null;
 
@@ -71,9 +73,19 @@ export function ActivityPicksWave({
                   >
                     {track.title}
                   </p>
-                  <p className="mt-0.5 line-clamp-2 text-xs text-spotify-muted">{track.artist}</p>
                 </div>
               </button>
+              {onArtistClick ? (
+                <button
+                  type="button"
+                  className="mt-0.5 line-clamp-2 w-full text-left text-xs text-spotify-muted hover:text-spotify-accent hover:underline"
+                  onClick={() => onArtistClick(track.artist)}
+                >
+                  {track.artist}
+                </button>
+              ) : (
+                <p className="mt-0.5 line-clamp-2 text-xs text-spotify-muted">{track.artist}</p>
+              )}
               <button
                 type="button"
                 aria-label={fav ? "Убрать из Hype" : "В Hype"}
