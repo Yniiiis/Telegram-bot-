@@ -17,7 +17,7 @@ _yt_url_cache: dict[str, tuple[tuple[str, dict[str, str]], float]] = {}
 _YT_CACHE_TTL_SEC = 600.0
 _YT_CACHE_MAX = 256
 # Bump when format / extractor logic changes so running workers do not reuse stale CDN URLs.
-_YT_CACHE_KEY_VER = 4
+_YT_CACHE_KEY_VER = 5
 
 
 def _yt_cache_key(watch_url: str) -> str:
@@ -131,7 +131,7 @@ def _yt_common_opts() -> dict[str, Any]:
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
-        "socket_timeout": 45,
+        "socket_timeout": 30,
         "noprogress": True,
         "postprocessors": [],
     }
@@ -161,33 +161,31 @@ def _extract_once(watch_url: str, format_spec: str, extractor_youtube: dict[str,
         return None
 
 
+# One yt-dlp `extract_info` round-trip often costs 15–60s on a VPS; never run 4 of them in a row per video.
+_YT_FORMAT_FOR_FULL_LIST = "bestaudio/best/worst"
+
+
 def _extract_youtube_audio_url_uncached(watch_url: str) -> tuple[str, dict[str, str]] | None:
     """
-    Prefer formats that Telegram WebView can decode; avoid falling back to opus/webm when possible.
+    Prefer WebView-safe URLs via `_pick_direct_media_url` over the full `formats` list.
+    At most one expensive extract per player_client attempt (not one extract per format string).
     """
-    passes: list[tuple[str, dict[str, Any]]] = [
-        (
-            "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio[acodec=aac]/bestaudio[ext=mp4]",
-            {"player_client": ["ios", "web", "android"]},
-        ),
-        (
-            "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]",
-            {"player_client": ["android", "web_creator", "web"]},
-        ),
-        (
-            "bestaudio[acodec!=opus][ext!=webm]/bestaudio[ext=m4a]/bestaudio",
-            {"player_client": ["web", "tv_embedded", "android"]},
-        ),
-        (
-            "ba[acodec!=opus][ext!=webm]/ba/b",
-            {},
-        ),
+    client_chain: list[dict[str, Any]] = [
+        {"player_client": ["android"]},
+        {"player_client": ["web"]},
+        {"player_client": ["tv_embedded"]},
     ]
 
-    for fmt_spec, yt_args in passes:
-        info = _extract_once(watch_url, fmt_spec, yt_args)
+    for yt_args in client_chain:
+        info = _extract_once(watch_url, _YT_FORMAT_FOR_FULL_LIST, yt_args)
         if not info:
             continue
+        url, hdr = _pick_direct_media_url(info)
+        if url:
+            return url, hdr
+
+    info = _extract_once(watch_url, _YT_FORMAT_FOR_FULL_LIST, {})
+    if info:
         url, hdr = _pick_direct_media_url(info)
         if url:
             return url, hdr

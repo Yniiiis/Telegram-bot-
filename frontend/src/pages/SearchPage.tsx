@@ -138,7 +138,7 @@ export function SearchPage() {
     warmTrackPlaybackBatch(
       token,
       results.map((t) => t.id),
-      8,
+      12,
     );
   }, [token, results]);
 
