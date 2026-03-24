@@ -6,6 +6,41 @@ import { useAuthStore } from "../store/authStore";
 import { useMediaSession } from "./useMediaSession";
 import { useCurrentTrack, usePlayerStore } from "../store/playerStore";
 
+const PREMATURE_END_MAX_RETRIES = 2;
+
+/**
+ * WebViews often mis-report `HTMLMediaElement.duration` when the stream stalls or only a chunk
+ * was buffered (e.g. ~10–15s) — then `ended` fires with cur≈dur and the old check did not treat
+ * that as premature. Use catalog `duration_sec` when present to detect truncated playback.
+ */
+function isNaturalPlaybackEnd(
+  currentTime: number,
+  htmlDuration: number,
+  catalogDurationSec: number | null | undefined,
+): boolean {
+  const meta =
+    catalogDurationSec != null && catalogDurationSec > 0 ? catalogDurationSec : null;
+  const html = Number.isFinite(htmlDuration) ? htmlDuration : NaN;
+
+  if (meta != null && currentTime >= meta - 3) {
+    return true;
+  }
+
+  const htmlLooksTruncated =
+    meta != null && Number.isFinite(html) && html >= 2 && meta > html + 5;
+
+  if (
+    !htmlLooksTruncated &&
+    Number.isFinite(html) &&
+    html >= 2 &&
+    currentTime >= html - 1.5
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 function playWhenBuffered(
   el: HTMLAudioElement,
   setPlaybackError: (msg: string) => void,
@@ -149,13 +184,14 @@ export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
       if (!isStillThisTrack()) return;
       const dur = el.duration;
       const cur = el.currentTime;
-      // Some WebViews fire `ended` immediately on decode/network quirks even though the track did not play through.
+      const natural = isNaturalPlaybackEnd(cur, dur, track.duration_sec);
+      // Unknown HTML duration / very start: still treat as flaky end (retry).
       const looksPremature =
-        Number.isFinite(dur) &&
-        dur >= 2 &&
-        (cur < 1 || cur < dur - 0.5);
+        !natural ||
+        (!Number.isFinite(dur) && cur < 2) ||
+        (Number.isFinite(dur) && dur >= 2 && cur < 1);
       if (looksPremature) {
-        if (streamErrorRetries.current < 1) {
+        if (streamErrorRetries.current < PREMATURE_END_MAX_RETRIES) {
           streamErrorRetries.current += 1;
           clearPlaybackError();
           el.load();
@@ -163,7 +199,7 @@ export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
           if (st.isPlaying) void el.play().catch(() => {});
           return;
         }
-        setPlaybackError("Playback stopped right after start. Try again or pick another track.");
+        setPlaybackError("Playback stopped before the end of the track. Try again or pick another track.");
         usePlayerStore.getState().pause();
         return;
       }
@@ -177,7 +213,7 @@ export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
       if (!isStillThisTrack()) return;
 
       const st = usePlayerStore.getState();
-      if (streamErrorRetries.current < 1) {
+      if (streamErrorRetries.current < PREMATURE_END_MAX_RETRIES) {
         streamErrorRetries.current += 1;
         clearPlaybackError();
         el.load();
@@ -186,9 +222,9 @@ export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
       }
 
       setPlaybackError(
-        "This track could not be played (unavailable or blocked). Skipping to the next one…",
+        "This track could not be played (unavailable or blocked). Try another track or tap play again.",
       );
-      next();
+      usePlayerStore.getState().pause();
     };
 
     el.addEventListener("timeupdate", onTime);
@@ -200,7 +236,7 @@ export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
       el.removeEventListener("ended", onEnded);
       el.removeEventListener("error", onError);
     };
-  }, [track?.id, token, next, setTimes, setPlaybackError, clearPlaybackError]);
+  }, [track?.id, track?.duration_sec, token, next, setTimes, setPlaybackError, clearPlaybackError]);
 
   useEffect(() => {
     const el = audioRef.current;

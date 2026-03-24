@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     # Upstream relay: faster connect for quicker first audio byte.
     stream_connect_timeout_sec: float = 5.0
     stream_read_timeout_sec: float = 90.0
+    # Optional: serve `STREAM_CACHE_DIR/{track_uuid}.audio` if present (Range supported). No in-request full download.
+    stream_cache_dir: str | None = None
     # YouTube checks run yt-dlp per track — slow; keep off for list endpoints unless you need strict filtering.
     track_probe_youtube: bool = False
     # Local only: enables POST /auth/dev (synthetic user). Never set in production.

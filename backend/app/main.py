@@ -33,11 +33,21 @@ async def _new_releases_refresh_loop(app: FastAPI) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    stream_timeout = httpx.Timeout(
+        settings.stream_read_timeout_sec,
+        connect=settings.stream_connect_timeout_sec,
+    )
+    stream_limits = httpx.Limits(max_connections=120, max_keepalive_connections=40)
     async with httpx.AsyncClient(
         headers={"User-Agent": "TelegramMusicCatalog/1.0"},
         timeout=httpx.Timeout(60.0),
-    ) as client:
+    ) as client, httpx.AsyncClient(
+        timeout=stream_timeout,
+        follow_redirects=True,
+        limits=stream_limits,
+    ) as stream_client:
         app.state.http_client = client
+        app.state.stream_upstream_client = stream_client
         task = asyncio.create_task(_new_releases_refresh_loop(app))
         try:
             yield

@@ -13,6 +13,7 @@ import {
   getFavorites,
   removeFavorite,
   searchTracksPage,
+  warmTrackPlaybackBatch,
   type SearchFilters,
   type SearchPageResult,
 } from "../lib/api";
@@ -131,6 +132,15 @@ export function SearchPage() {
   );
 
   usePrefetchCovers(results, 20);
+
+  useEffect(() => {
+    if (!token || results.length === 0) return;
+    warmTrackPlaybackBatch(
+      token,
+      results.map((t) => t.id),
+      8,
+    );
+  }, [token, results]);
 
   useEffect(() => {
     setFilters(parseFiltersFromParams(params));

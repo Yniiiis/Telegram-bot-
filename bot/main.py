@@ -5,6 +5,7 @@ import sys
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramUnauthorizedError
 from aiogram.types import BotCommand
 
 from config import settings
@@ -36,7 +37,15 @@ async def main() -> None:
     dp.include_router(root_router)
     dp.startup.register(on_startup)
 
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    except TelegramUnauthorizedError:
+        logging.error(
+            "Telegram rejected BOT_TOKEN (Unauthorized). "
+            "Open @BotFather → API Token → copy into bot/.env as BOT_TOKEN=… "
+            "and backend/.env as TELEGRAM_BOT_TOKEN=… then restart."
+        )
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

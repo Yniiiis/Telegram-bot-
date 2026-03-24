@@ -9,6 +9,7 @@ import {
   getFavorites,
   removeFavorite,
   searchTracksPage,
+  warmTrackPlaybackBatch,
   type SearchPageResult,
 } from "../lib/api";
 import { useAuthStore } from "../store/authStore";
@@ -40,6 +41,15 @@ export function ArtistPage() {
   } | null>(null);
 
   usePrefetchCovers(results, 20);
+
+  useEffect(() => {
+    if (!token || results.length === 0) return;
+    warmTrackPlaybackBatch(
+      token,
+      results.map((t) => t.id),
+      8,
+    );
+  }, [token, results]);
 
   useEffect(() => {
     if (!token) return;

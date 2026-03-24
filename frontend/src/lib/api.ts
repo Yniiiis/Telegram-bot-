@@ -198,6 +198,22 @@ export async function searchTracks(token: string, q: string, limit = 25): Promis
   return page.tracks;
 }
 
+/** Fire-and-forget: resolves yt-dlp / Zaycev / SoundCloud URLs on the server before the user taps play. */
+export function warmTrackPlayback(token: string, trackId: string): void {
+  void apiFetch(`${base()}/track/${trackId}/prepare`, {
+    method: "POST",
+    headers: { ...authHeader(token) },
+  }).catch(() => {
+    /* optional — ignore 502 for dead rows */
+  });
+}
+
+export function warmTrackPlaybackBatch(token: string, trackIds: string[], maxTracks = 8): void {
+  for (const id of trackIds.slice(0, maxTracks)) {
+    warmTrackPlayback(token, id);
+  }
+}
+
 export interface DailyContextMeta {
   id: string;
   label: string;
