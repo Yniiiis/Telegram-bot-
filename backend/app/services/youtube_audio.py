@@ -17,7 +17,7 @@ _yt_url_cache: dict[str, tuple[tuple[str, dict[str, str]], float]] = {}
 _YT_CACHE_TTL_SEC = 600.0
 _YT_CACHE_MAX = 256
 # Bump when format / extractor logic changes so running workers do not reuse stale CDN URLs.
-_YT_CACHE_KEY_VER = 3
+_YT_CACHE_KEY_VER = 4
 
 
 def _yt_cache_key(watch_url: str) -> str:
@@ -64,37 +64,66 @@ def _has_audio(fmt: dict[str, Any]) -> bool:
     return bool(ac) and str(ac) != "none"
 
 
+def _telegram_webview_audio_score(fmt: dict[str, Any]) -> int:
+    """
+    Telegram Mini App uses a WebKit-like <audio> stack — Opus-in-WebM often yields MEDIA_ERR_SRC_NOT_SUPPORTED.
+    Prefer progressive M4A / AAC-in-MP4.
+    """
+    ext = str(fmt.get("ext") or "").lower()
+    ac_raw = fmt.get("acodec")
+    ac = str(ac_raw or "").lower()
+    if _is_bad_stream_protocol(fmt):
+        return -1
+    if (not ac_raw or str(ac_raw) == "none") and ext in ("m4a", "mp4"):
+        return 95
+    if not _has_audio(fmt):
+        return -1
+    if ac in ("opus", "vorbis"):
+        return 0
+    if ext == "webm":
+        return 5 if ("aac" in ac or "mp4a" in ac) else 0
+    if ext in ("m4a", "mp4", "m4v"):
+        return 100
+    if "mp4a" in ac or ac == "aac":
+        return 90
+    if ext == "3gp":
+        return 45
+    return 25
+
+
 def _pick_direct_media_url(info: dict[str, Any]) -> tuple[str | None, dict[str, str]]:
     """
-    yt-dlp often leaves top-level `url` empty when using merged/DASH formats — use requested_formats / formats.
+    Among all yt-dlp format entries, pick the URL with the best Telegram WebView compatibility score.
     """
     base_hdr = dict(info.get("http_headers") or {})
+    candidates: list[tuple[int, str, dict[str, str]]] = []
 
-    top = info.get("url")
-    if isinstance(top, str) and top.startswith("http") and ".m3u8" not in top.lower():
-        return top, base_hdr
-
-    for fmt in reversed(info.get("requested_formats") or []):
-        if not isinstance(fmt, dict) or not fmt.get("url"):
-            continue
-        if _is_bad_stream_protocol(fmt):
-            continue
-        if not _has_audio(fmt):
-            continue
+    def consider(fmt: dict[str, Any]) -> None:
+        u = fmt.get("url")
+        if not isinstance(u, str) or not u.startswith("http"):
+            return
+        sc = _telegram_webview_audio_score(fmt)
+        if sc <= 0:
+            return
         fh = dict(fmt.get("http_headers") or {})
-        return str(fmt["url"]), {**base_hdr, **fh}
+        candidates.append((sc, u, {**base_hdr, **fh}))
 
-    for fmt in reversed(info.get("formats") or []):
-        if not isinstance(fmt, dict) or not fmt.get("url"):
-            continue
-        if _is_bad_stream_protocol(fmt):
-            continue
-        if not _has_audio(fmt):
-            continue
-        fh = dict(fmt.get("http_headers") or {})
-        return str(fmt["url"]), {**base_hdr, **fh}
+    consider(info)
 
-    return None, base_hdr
+    for fmt in info.get("requested_formats") or []:
+        if isinstance(fmt, dict):
+            consider(fmt)
+
+    for fmt in info.get("formats") or []:
+        if isinstance(fmt, dict):
+            consider(fmt)
+
+    if not candidates:
+        return None, base_hdr
+
+    candidates.sort(key=lambda x: -x[0])
+    _sc, url, hdr = candidates[0]
+    return url, hdr
 
 
 def _yt_common_opts() -> dict[str, Any]:
@@ -134,20 +163,23 @@ def _extract_once(watch_url: str, format_spec: str, extractor_youtube: dict[str,
 
 def _extract_youtube_audio_url_uncached(watch_url: str) -> tuple[str, dict[str, str]] | None:
     """
-    Several passes: strict m4a (WebView-friendly), then plain bestaudio, then default clients.
-    YouTube often omits top-level `url` — _pick_direct_media_url handles requested_formats.
+    Prefer formats that Telegram WebView can decode; avoid falling back to opus/webm when possible.
     """
     passes: list[tuple[str, dict[str, Any]]] = [
         (
-            "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio[abr<=128]/bestaudio/best",
-            {"player_client": ["android", "web", "ios"]},
+            "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio[acodec=aac]/bestaudio[ext=mp4]",
+            {"player_client": ["ios", "web", "android"]},
         ),
         (
-            "bestaudio/best",
-            {"player_client": ["web", "android", "tv_embedded"]},
+            "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]",
+            {"player_client": ["android", "web_creator", "web"]},
         ),
         (
-            "ba/b",
+            "bestaudio[acodec!=opus][ext!=webm]/bestaudio[ext=m4a]/bestaudio",
+            {"player_client": ["web", "tv_embedded", "android"]},
+        ),
+        (
+            "ba[acodec!=opus][ext!=webm]/ba/b",
             {},
         ),
     ]
@@ -160,7 +192,10 @@ def _extract_youtube_audio_url_uncached(watch_url: str) -> tuple[str, dict[str, 
         if url:
             return url, hdr
 
-    logger.warning("yt-dlp: no direct audio URL for %s (update yt-dlp; on VPS try YOUTUBE_COOKIES_FILE)", watch_url[:80])
+    logger.warning(
+        "yt-dlp: no WebView-safe audio URL for %s (try YOUTUBE_COOKIES_FILE or yt-dlp -U)",
+        watch_url[:80],
+    )
     return None
 
 

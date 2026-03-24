@@ -141,6 +141,14 @@ async def stream_track(
             await client.aclose()
 
     media_type = headers.pop("content-type", None) or "application/octet-stream"
+    # WebView uses Content-Type as a hint; YouTube CDNs often send video/mp4 or octet-stream for AAC streams.
+    if kind == "youtube":
+        mt = media_type.split(";")[0].strip().lower()
+        if mt in ("application/octet-stream", "binary/octet-stream"):
+            media_type = "audio/mp4"
+        elif mt == "video/mp4":
+            media_type = "audio/mp4"
+
     return StreamingResponse(
         body(),
         status_code=response.status_code,
