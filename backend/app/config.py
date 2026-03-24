@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     stream_cache_dir: str | None = None
     # YouTube checks run yt-dlp per track — slow; keep off for list endpoints unless you need strict filtering.
     track_probe_youtube: bool = False
+    # Optional Netscape cookies.txt for yt-dlp when the server IP is rate-limited / blocked by YouTube.
+    youtube_cookies_file: str | None = None
     # Local only: enables POST /auth/dev (synthetic user). Never set in production.
     allow_dev_auth: bool = False
 

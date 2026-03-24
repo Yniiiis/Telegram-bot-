@@ -40,7 +40,8 @@ async def resolve_playback_media(
         if not resolved:
             raise PlaybackResolveError(
                 "YOUTUBE_EXTRACT_FAILED",
-                "Could not resolve YouTube audio. Install yt-dlp or try another track.",
+                "Could not resolve YouTube audio. On the server: pip install -U yt-dlp, check yt-dlp YouTube notes, "
+                "or set YOUTUBE_COOKIES_FILE to a cookies.txt from your browser.",
             )
         media_url, upstream_headers = resolved
         return media_url, dict(upstream_headers), "youtube"
