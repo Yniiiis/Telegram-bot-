@@ -82,12 +82,20 @@ async def stream_track(
     if range_hdr:
         req_headers["Range"] = range_hdr
 
-    # Pooled client: avoids new TLS handshakes per play (important under 10+ concurrent listeners).
-    stream_client: httpx.AsyncClient = request.app.state.stream_upstream_client
-    stream_cm = stream_client.stream("GET", media_url, headers=req_headers)
+    # One client per stream: a shared pooled client caused intermittent <audio> failures in Telegram WebView
+    # when several listeners held concurrent upstream streams on the same httpx pool.
+    client = httpx.AsyncClient(
+        timeout=httpx.Timeout(
+            settings.stream_read_timeout_sec,
+            connect=settings.stream_connect_timeout_sec,
+        ),
+        follow_redirects=True,
+    )
+    stream_cm = client.stream("GET", media_url, headers=req_headers)
     try:
         response = await stream_cm.__aenter__()
     except httpx.HTTPError as exc:
+        await client.aclose()
         logger.warning("stream upstream connect failed track_id=%s: %s", track_id, exc)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -101,6 +109,7 @@ async def stream_track(
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         await stream_cm.__aexit__(None, None, None)
+        await client.aclose()
         code = "UPSTREAM_HTTP_ERROR"
         if exc.response.status_code in (403, 404):
             code = "UPSTREAM_NOT_AVAILABLE"
@@ -129,6 +138,7 @@ async def stream_track(
             return
         finally:
             await stream_cm.__aexit__(None, None, None)
+            await client.aclose()
 
     media_type = headers.pop("content-type", None) or "application/octet-stream"
     return StreamingResponse(

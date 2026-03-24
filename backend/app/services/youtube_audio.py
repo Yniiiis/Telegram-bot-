@@ -14,29 +14,37 @@ _yt_lock = threading.Lock()
 _yt_url_cache: dict[str, tuple[tuple[str, dict[str, str]], float]] = {}
 _YT_CACHE_TTL_SEC = 600.0
 _YT_CACHE_MAX = 256
+# Bump when format / extractor logic changes so running workers do not reuse stale CDN URLs.
+_YT_CACHE_KEY_VER = 2
+
+
+def _yt_cache_key(watch_url: str) -> str:
+    return f"{watch_url}\0{_YT_CACHE_KEY_VER}"
 
 
 def _yt_cache_get(watch_url: str) -> tuple[str, dict[str, str]] | None:
     now = time.monotonic()
+    key = _yt_cache_key(watch_url)
     with _yt_lock:
-        ent = _yt_url_cache.get(watch_url)
+        ent = _yt_url_cache.get(key)
         if not ent:
             return None
         val, until = ent
         if now > until:
-            del _yt_url_cache[watch_url]
+            del _yt_url_cache[key]
             return None
         return val
 
 
 def _yt_cache_put(watch_url: str, val: tuple[str, dict[str, str]]) -> None:
+    key = _yt_cache_key(watch_url)
     with _yt_lock:
         if len(_yt_url_cache) >= _YT_CACHE_MAX:
             # Drop arbitrary oldest bucket (simple cap; avoids unbounded RAM with many distinct URLs).
             drop = next(iter(_yt_url_cache), None)
             if drop is not None:
                 del _yt_url_cache[drop]
-        _yt_url_cache[watch_url] = (val, time.monotonic() + _YT_CACHE_TTL_SEC)
+        _yt_url_cache[key] = (val, time.monotonic() + _YT_CACHE_TTL_SEC)
 
 
 def extract_youtube_audio_url(watch_url: str) -> tuple[str, dict[str, str]] | None:
@@ -62,9 +70,11 @@ def _extract_youtube_audio_url_uncached(watch_url: str) -> tuple[str, dict[str, 
         logger.error("yt_dlp is not installed")
         return None
 
-    # Prefer modest bitrate for faster start and less buffering in Telegram WebView; avoid postprocessors.
+    # Telegram / iOS WebView decodes M4A(AAC) reliably; narrow abr-only picks can yield opus/webm that fails with MEDIA_ERR_SRC_NOT_SUPPORTED.
     opts: dict[str, Any] = {
-        "format": "bestaudio[abr<=128]/bestaudio[abr<=192]/bestaudio/best",
+        "format": (
+            "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio[abr<=128]/bestaudio/best"
+        ),
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
@@ -72,8 +82,7 @@ def _extract_youtube_audio_url_uncached(watch_url: str) -> tuple[str, dict[str, 
         "noprogress": True,
         "postprocessors": [],
         "extractor_args": {
-            # Single client = faster extract than trying multiple fallbacks.
-            "youtube": {"player_client": ["android", "web"]},
+            "youtube": {"player_client": ["android", "web", "ios"]},
         },
     }
     try:
