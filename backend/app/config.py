@@ -12,6 +12,13 @@ class Settings(BaseSettings):
     hitmotop_base_url: str = "https://rus.hitmotop.com"
     # Listing page with track links (e.g. year chart).
     hitmotop_charts_path: str = "/2026"
+    # JadeMusic-style parsing (github.com/nshib00/jademusic-api): track__info + track__download-btn.
+    hitmotop_use_jade_selectors: bool = True
+    # /search/start/{48*n}?q= pagination like HitmoData in jademusic-api (faster paging).
+    hitmotop_search_start_pagination: bool = True
+    hitmotop_page_size: int = 48
+    # Optional: https://gde-hitmo.org/ — resolve current mirror (see jademusic hitmo/url.py).
+    hitmotop_mirror_lookup_url: str | None = None
     catalog_provider_chain: str = "hitmotop"
 
     new_releases_refresh_sec: int = 86400
