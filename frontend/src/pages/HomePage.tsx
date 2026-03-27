@@ -13,7 +13,7 @@ import {
   getNewReleases,
   getRecentTracks,
   removeFavorite,
-  searchTracks,
+  searchHitmotopFeedPage,
 } from "../lib/api";
 import { useAuthStore } from "../store/authStore";
 import { usePlayerStore } from "../store/playerStore";
@@ -68,8 +68,8 @@ export function HomePage() {
     setLoadingRecs(true);
     setErr(null);
     try {
-      const tracks = await searchTracks(token, "pop", 12);
-      setRecs(tracks);
+      const page = await searchHitmotopFeedPage(token, 0, 14);
+      setRecs(page.tracks);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Failed to load");
     } finally {
@@ -291,7 +291,7 @@ export function HomePage() {
 
       <section>
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-white">Made for you</h2>
+          <h2 className="text-lg font-semibold text-white">Hitmotop · подборка</h2>
           <button
             type="button"
             onClick={() => void loadRecs()}
@@ -310,7 +310,7 @@ export function HomePage() {
             onToggleFavorite={toggleFavorite}
             onArtistClick={openArtist}
             onPlay={(_t, index) => setQueue(recs, index)}
-            emptyLabel="Search something to get started"
+            emptyLabel="Откройте поиск или подождите загрузку с Hitmotop"
           />
         )}
       </section>

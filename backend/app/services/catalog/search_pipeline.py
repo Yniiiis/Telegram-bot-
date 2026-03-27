@@ -8,7 +8,6 @@ import re
 import unicodedata
 from dataclasses import replace
 
-from app.config import settings
 from app.services.external_track import ExternalTrack
 
 # Brackets / feat. stripping for dedupe keys only (not for display).
@@ -231,21 +230,8 @@ def deep_query_variants(query: str, *, max_variants: int) -> list[str]:
 
 
 def _source_priority_map() -> dict[str, int]:
-    raw = (settings.search_source_priority or "").strip()
-    if not raw:
-        order = [
-            "zaycev",
-            "hitmotop",
-            "lastfm",
-            "bandcamp",
-            "jamendo",
-            "soundcloud",
-            "youtube_music",
-            "mock",
-        ]
-    else:
-        order = [p.strip().lower() for p in raw.split(",") if p.strip()]
-    return {name: i for i, name in enumerate(order)}
+    """Reintroduce ordering (e.g. from env) when cross-source merge returns."""
+    return {}
 
 
 def merge_dedupe_cross_source(

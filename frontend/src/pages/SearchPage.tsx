@@ -12,9 +12,9 @@ import {
   addTrackToPlaylist,
   getFavorites,
   removeFavorite,
+  searchHitmotopFeedPage,
   searchTracksPage,
   warmTrackPlaybackBatch,
-  type SearchFilters,
   type SearchPageResult,
 } from "../lib/api";
 import { useAuthStore } from "../store/authStore";
@@ -22,76 +22,17 @@ import { usePlayerStore } from "../store/playerStore";
 
 const PAGE_SIZE = 20;
 
-const CATALOG_SOURCES = [
-  "zaycev",
-  "hitmotop",
-  "jamendo",
-  "lastfm",
-  "bandcamp",
-  "youtube_music",
-  "soundcloud",
-  "mock",
-] as const;
-
-const SOURCE_LABELS: Record<(typeof CATALOG_SOURCES)[number], string> = {
-  zaycev: "Zaycev",
-  hitmotop: "Hitmotop",
-  jamendo: "Jamendo",
-  lastfm: "Last.fm",
-  bandcamp: "Bandcamp",
-  youtube_music: "YouTube Music",
-  soundcloud: "SoundCloud",
-  mock: "Demo",
-};
-
-type FilterState = {
-  sources: Set<string>;
-  minSec: string;
-  maxSec: string;
-};
-
-function parseFiltersFromParams(sp: URLSearchParams): FilterState {
-  const sources = new Set<string>();
-  const raw = sp.get("sources");
-  if (raw) {
-    for (const part of raw.split(",")) {
-      const t = part.trim().toLowerCase();
-      if (t) sources.add(t);
-    }
-  }
-  return {
-    sources,
-    minSec: sp.get("min_duration_sec") ?? "",
-    maxSec: sp.get("max_duration_sec") ?? "",
-  };
-}
-
-function filtersToApi(f: FilterState): SearchFilters | undefined {
-  const out: SearchFilters = {};
-  if (f.sources.size > 0) out.sources = [...f.sources];
-  if (f.minSec.trim() !== "") {
-    const n = Number(f.minSec);
-    if (!Number.isNaN(n) && n >= 0) out.min_duration_sec = n;
-  }
-  if (f.maxSec.trim() !== "") {
-    const n = Number(f.maxSec);
-    if (!Number.isNaN(n) && n >= 0) out.max_duration_sec = n;
-  }
-  if (!out.sources?.length && out.min_duration_sec == null && out.max_duration_sec == null) {
-    return undefined;
-  }
-  return out;
-}
-
-function appendFilters(sp: URLSearchParams, f: FilterState, artistMode: boolean) {
-  if (f.sources.size > 0) sp.set("sources", [...f.sources].join(","));
-  else sp.delete("sources");
-  if (f.minSec.trim() !== "") sp.set("min_duration_sec", f.minSec.trim());
-  else sp.delete("min_duration_sec");
-  if (f.maxSec.trim() !== "") sp.set("max_duration_sec", f.maxSec.trim());
-  else sp.delete("max_duration_sec");
+function buildSearchParams(
+  q: string,
+  addTo: string | null,
+  artistMode: boolean,
+): URLSearchParams {
+  const sp = new URLSearchParams();
+  const t = q.trim();
+  if (t) sp.set("q", t);
+  if (addTo) sp.set("addTo", addTo);
   if (artistMode) sp.set("artist", "1");
-  else sp.delete("artist");
+  return sp;
 }
 
 export function SearchPage() {
@@ -103,7 +44,6 @@ export function SearchPage() {
 
   const token = useAuthStore((s) => s.token);
   const [q, setQ] = useState(initialQ);
-  const [filters, setFilters] = useState<FilterState>(() => parseFiltersFromParams(params));
   const [results, setResults] = useState<Track[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -115,13 +55,14 @@ export function SearchPage() {
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(() => new Set());
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
   const prefetchBuf = useRef<{
+    mode: "feed" | "search";
     q: string;
     offset: number;
     fk: string;
     page: SearchPageResult;
   } | null>(null);
 
-  const filtersKey = useMemo(() => JSON.stringify(filtersToApi(filters) ?? {}), [filters]);
+  const prefetchKey = useMemo(() => (artistMode ? "a1" : "a0"), [artistMode]);
 
   const openArtist = useCallback(
     (artist: string) => {
@@ -143,10 +84,6 @@ export function SearchPage() {
   }, [token, results]);
 
   useEffect(() => {
-    setFilters(parseFiltersFromParams(params));
-  }, [params]);
-
-  useEffect(() => {
     if (!token || addToPlaylistId) return;
     void getFavorites(token)
       .then((tracks) => setFavoriteIds(new Set(tracks.map((t) => t.id))))
@@ -159,19 +96,21 @@ export function SearchPage() {
       offset: number,
       append: boolean,
       pageLimit: number = PAGE_SIZE,
-      filterArg?: FilterState,
     ) => {
+      if (!token) return;
       const t = query.trim();
-      if (!token || !t) {
-        if (!append) {
-          setResults([]);
-          setHasMore(false);
+      if (!t) {
+        const page = await searchHitmotopFeedPage(token, offset, pageLimit);
+        if (append) {
+          setResults((prev) => [...prev, ...page.tracks]);
+        } else {
+          setResults(page.tracks);
         }
+        setNextOffset(page.offset + page.tracks.length);
+        setHasMore(page.has_more);
         return;
       }
-      const f = filterArg ?? filters;
-      const apiFilters = filtersToApi(f);
-      const page = await searchTracksPage(token, t, offset, pageLimit, apiFilters, {
+      const page = await searchTracksPage(token, t, offset, pageLimit, undefined, {
         artistFocus: artistMode,
       });
       if (append) {
@@ -182,17 +121,13 @@ export function SearchPage() {
       setNextOffset(page.offset + page.tracks.length);
       setHasMore(page.has_more);
     },
-    [token, filters],
+    [token, artistMode],
   );
 
   const runSearch = useCallback(
     async (query: string, reset: boolean) => {
+      if (!token) return;
       const t = query.trim();
-      if (!token || !t) {
-        setResults([]);
-        setHasMore(false);
-        return;
-      }
       if (reset) {
         prefetchBuf.current = null;
         setLoading(true);
@@ -213,10 +148,17 @@ export function SearchPage() {
   );
 
   const loadMore = useCallback(async () => {
+    if (!token || !hasMore || loadingMore || loading || addToPlaylistId) return;
     const t = q.trim();
-    if (!token || !t || !hasMore || loadingMore || loading || addToPlaylistId) return;
+    const mode: "feed" | "search" = t ? "search" : "feed";
     const buf = prefetchBuf.current;
-    if (buf && buf.q === t && buf.offset === nextOffset && buf.fk === filtersKey) {
+    if (
+      buf &&
+      buf.mode === mode &&
+      buf.q === t &&
+      buf.offset === nextOffset &&
+      buf.fk === prefetchKey
+    ) {
       prefetchBuf.current = null;
       setLoadingMore(true);
       setErr(null);
@@ -232,7 +174,7 @@ export function SearchPage() {
     setLoadingMore(true);
     setErr(null);
     try {
-      await fetchPage(t, nextOffset, true, PAGE_SIZE, filters);
+      await fetchPage(t, nextOffset, true, PAGE_SIZE);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Could not load more");
     } finally {
@@ -247,23 +189,29 @@ export function SearchPage() {
     nextOffset,
     fetchPage,
     addToPlaylistId,
-    filters,
-    filtersKey,
+    prefetchKey,
   ]);
 
   useEffect(() => {
-    if (!token || !q.trim() || !hasMore || loading || loadingMore || addToPlaylistId) return;
+    if (!token || !hasMore || loading || loadingMore || addToPlaylistId) return;
     const t = q.trim();
     const off = nextOffset;
-    const apiFilters = filtersToApi(filters);
     let cancelled = false;
     void (async () => {
       try {
-        const page = await searchTracksPage(token, t, off, PAGE_SIZE, apiFilters, {
-          artistFocus: artistMode,
-        });
+        const page = t
+          ? await searchTracksPage(token, t, off, PAGE_SIZE, undefined, {
+              artistFocus: artistMode,
+            })
+          : await searchHitmotopFeedPage(token, off, PAGE_SIZE);
         if (cancelled) return;
-        prefetchBuf.current = { q: t, offset: off, fk: filtersKey, page };
+        prefetchBuf.current = {
+          mode: t ? "search" : "feed",
+          q: t,
+          offset: off,
+          fk: prefetchKey,
+          page,
+        };
       } catch {
         if (!cancelled) prefetchBuf.current = null;
       }
@@ -279,19 +227,13 @@ export function SearchPage() {
     loading,
     loadingMore,
     addToPlaylistId,
-    filters,
-    filtersKey,
     artistMode,
+    prefetchKey,
   ]);
 
   useEffect(() => {
     setQ(initialQ);
-    if (initialQ) void runSearch(initialQ, true);
-    else {
-      setResults([]);
-      setHasMore(false);
-      setLoading(false);
-    }
+    void runSearch(initialQ, true);
   }, [initialQ, artistMode, runSearch]);
 
   useEffect(() => {
@@ -308,7 +250,7 @@ export function SearchPage() {
   }, [loadMore, hasMore, addToPlaylistId, results.length]);
 
   const title = useMemo(
-    () => (addToPlaylistId ? "Add to playlist" : "Search"),
+    () => (addToPlaylistId ? "Add to playlist" : "Поиск Hitmotop"),
     [addToPlaylistId],
   );
 
@@ -332,12 +274,19 @@ export function SearchPage() {
     }
   }
 
+  const showSkeleton = loading && (q.trim() || results.length === 0);
+
   return (
     <div className="space-y-5">
       <header>
         <h1 className="text-2xl font-bold text-white">{title}</h1>
         {addToPlaylistId && (
           <p className="mt-1 text-sm text-spotify-muted">Tap a track to add it to your playlist.</p>
+        )}
+        {!addToPlaylistId && (
+          <p className="mt-1 text-xs text-spotify-muted">
+            Каталог: rus.hitmotop.com · без запроса показывается страница /2026
+          </p>
         )}
       </header>
 
@@ -346,100 +295,31 @@ export function SearchPage() {
         onChange={setQ}
         onSubmit={() => {
           const t = q.trim();
-          const sp = new URLSearchParams();
-          if (t) sp.set("q", t);
-          if (addToPlaylistId) sp.set("addTo", addToPlaylistId);
-          appendFilters(sp, filters, artistMode);
+          const sp = buildSearchParams(q, addToPlaylistId, artistMode);
           const qs = sp.toString();
           navigate(qs ? `/search?${qs}` : "/search");
-          if (t) void runSearch(t, true);
+          void runSearch(t, true);
         }}
         autoFocus
       />
 
       {!addToPlaylistId && (
-        <details className="rounded-lg bg-spotify-elevated px-3 py-2 text-sm text-spotify-muted">
-          <summary className="cursor-pointer font-medium text-white">Фильтры поиска</summary>
-            <div className="mt-3 space-y-3 border-t border-white/10 pt-3">
-            <label className="flex cursor-pointer items-center gap-2 text-xs text-white">
-              <input
-                type="checkbox"
-                checked={artistMode}
-                onChange={() => {
-                  const t = q.trim();
-                  const sp = new URLSearchParams();
-                  if (t) sp.set("q", t);
-                  appendFilters(sp, filters, !artistMode);
-                  const qs = sp.toString();
-                  navigate(qs ? `/search?${qs}` : "/search");
-                }}
-                className="rounded border-spotify-muted"
-              />
-              Быстрый поиск по исполнителю (меньше вариантов запроса — быстрее ответ)
-            </label>
-            <p className="text-xs">Источники каталога</p>
-            <div className="flex flex-wrap gap-2">
-              {CATALOG_SOURCES.map((src) => (
-                <label key={src} className="flex cursor-pointer items-center gap-1.5 text-xs text-white">
-                  <input
-                    type="checkbox"
-                    checked={filters.sources.has(src)}
-                    onChange={() => {
-                      setFilters((prev) => {
-                        const next = new Set(prev.sources);
-                        if (next.has(src)) next.delete(src);
-                        else next.add(src);
-                        return { ...prev, sources: next };
-                      });
-                    }}
-                    className="rounded border-spotify-muted"
-                  />
-                  {SOURCE_LABELS[src]}
-                </label>
-              ))}
-            </div>
-            <div className="flex flex-wrap gap-3">
-              <label className="flex flex-col gap-1 text-xs">
-                <span>Мин. длительность (сек)</span>
-                <input
-                  type="number"
-                  min={0}
-                  className="w-28 rounded bg-spotify-base px-2 py-1 text-white"
-                  value={filters.minSec}
-                  onChange={(e) => setFilters((p) => ({ ...p, minSec: e.target.value }))}
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs">
-                <span>Макс. длительность (сек)</span>
-                <input
-                  type="number"
-                  min={0}
-                  className="w-28 rounded bg-spotify-base px-2 py-1 text-white"
-                  value={filters.maxSec}
-                  onChange={(e) => setFilters((p) => ({ ...p, maxSec: e.target.value }))}
-                />
-              </label>
-            </div>
-            <button
-              type="button"
-              className="text-xs font-medium text-spotify-accent hover:underline"
-              onClick={() => {
-                const t = q.trim();
-                const sp = new URLSearchParams();
-                if (t) sp.set("q", t);
-                appendFilters(sp, filters, artistMode);
-                const qs = sp.toString();
-                navigate(qs ? `/search?${qs}` : "/search");
-                if (t) void runSearch(t, true);
-              }}
-            >
-              Применить к результатам
-            </button>
-          </div>
-        </details>
+        <label className="flex cursor-pointer items-center gap-2 text-xs text-white">
+          <input
+            type="checkbox"
+            checked={artistMode}
+            onChange={() => {
+              const sp = buildSearchParams(q, addToPlaylistId, !artistMode);
+              const qs = sp.toString();
+              navigate(qs ? `/search?${qs}` : "/search");
+            }}
+            className="rounded border-spotify-muted"
+          />
+          Упор на исполнителя (быстрее при длинном запросе)
+        </label>
       )}
 
-      {loading && q.trim() && <TrackListSkeleton rows={8} />}
+      {showSkeleton && <TrackListSkeleton rows={8} />}
       {err && <p className="text-sm text-red-400">{err}</p>}
 
       {!loading && (
@@ -461,7 +341,9 @@ export function SearchPage() {
             }
             setQueue(results, index);
           }}
-          emptyLabel={q.trim() ? "No results" : "Type to search the catalog"}
+          emptyLabel={
+            q.trim() ? "Ничего не найдено" : "Пусто — проверьте доступ к rus.hitmotop.com с сервера"
+          }
         />
       )}
 

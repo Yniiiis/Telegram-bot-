@@ -165,6 +165,22 @@ export interface SearchFilters {
   max_duration_sec?: number | null;
 }
 
+/** Hitmotop charts/list page (backend: HITMOTOP_CHARTS_PATH, default /2026). */
+export async function searchHitmotopFeedPage(
+  token: string,
+  offset: number,
+  limit: number,
+): Promise<SearchPageResult> {
+  const params = new URLSearchParams({
+    offset: String(offset),
+    limit: String(limit),
+  });
+  const res = await apiFetch(`${base()}/search/feed?${params}`, {
+    headers: { ...authHeader(token) },
+  });
+  return parseJson<SearchPageResult>(res);
+}
+
 export async function searchTracksPage(
   token: string,
   q: string,

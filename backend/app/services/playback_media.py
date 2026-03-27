@@ -1,18 +1,13 @@
-"""Resolve a playable upstream URL for a Track (shared by /stream and /tracks/.../prepare)."""
+"""Resolve a playable upstream URL for a Track (Hitmotop direct MP3 only in this deployment)."""
 
 from __future__ import annotations
 
-import asyncio
 from typing import Literal
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.models.track import Track
-from app.services.catalog.soundcloud_source import soundcloud_refresh_play_url
-from app.services.catalog.zaycev_client import get_zaycev_access_token, zaycev_play_url
-from app.services.youtube_audio import extract_youtube_audio_url
 
 StreamKind = Literal["youtube", "direct"]
 
@@ -31,60 +26,16 @@ async def resolve_playback_media(
     track: Track,
     http: httpx.AsyncClient,
 ) -> tuple[str, dict[str, str], StreamKind]:
-    """
-    Returns (media_url, extra_headers_for_get, kind).
-    For youtube, extra_headers must be merged into the upstream request.
-    """
-    if track.source == "youtube_music":
-        resolved = await asyncio.to_thread(extract_youtube_audio_url, track.audio_url)
-        if not resolved:
-            raise PlaybackResolveError(
-                "YOUTUBE_EXTRACT_FAILED",
-                "Could not resolve YouTube audio. On the server: pip install -U yt-dlp, check yt-dlp YouTube notes, "
-                "or set YOUTUBE_COOKIES_FILE to a cookies.txt from your browser.",
-            )
-        media_url, upstream_headers = resolved
-        return media_url, dict(upstream_headers), "youtube"
-
-    media_url = track.audio_url
-    if track.source == "soundcloud":
-        sc_cid = (settings.soundcloud_client_id or "").strip()
-        if not sc_cid:
-            raise PlaybackResolveError(
-                "SOUNDCLOUD_NO_CLIENT_ID",
-                "SoundCloud client_id is not configured.",
-            )
-        fresh = await soundcloud_refresh_play_url(http, track.external_id, sc_cid)
-        if not fresh:
-            raise PlaybackResolveError(
-                "SOUNDCLOUD_RESOLVE_FAILED",
-                "Could not resolve SoundCloud stream for this track.",
-            )
-        if fresh != track.audio_url:
-            track.audio_url = fresh
-            await db.commit()
-        media_url = fresh
-
-    if track.source == "zaycev":
-        ztok = await get_zaycev_access_token(http)
-        if not ztok:
-            raise PlaybackResolveError(
-                "ZAYCEV_AUTH",
-                "Could not obtain Zaycev access token.",
-            )
-        try:
-            zid = int(track.external_id)
-        except (TypeError, ValueError) as exc:
-            raise PlaybackResolveError("ZAYCEV_BAD_ID", "Invalid Zaycev track id.") from exc
-        fresh = await zaycev_play_url(http, ztok, zid)
-        if not fresh:
-            raise PlaybackResolveError(
-                "ZAYCEV_PLAY",
-                "Zaycev did not return a play URL for this track.",
-            )
-        if fresh != track.audio_url:
-            track.audio_url = fresh
-            await db.commit()
-        media_url = fresh
-
+    _ = (db, http)
+    if track.source != "hitmotop":
+        raise PlaybackResolveError(
+            "UNSUPPORTED_SOURCE",
+            "Only Hitmotop (rus.hitmotop.com) tracks are supported. Search again to add tracks.",
+        )
+    media_url = (track.audio_url or "").strip()
+    if not media_url.startswith("http"):
+        raise PlaybackResolveError(
+            "NO_AUDIO_URL",
+            "This track has no playable URL. Try another result from Hitmotop.",
+        )
     return media_url, {}, "direct"

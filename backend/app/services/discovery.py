@@ -1,31 +1,25 @@
-"""Home discovery: daily contexts, new-release feed refresh, search filter helpers."""
+"""Home discovery: contexts, new-release refresh (catalog sources re-added in engine)."""
 
 from __future__ import annotations
 
-import asyncio
-import datetime
 import logging
 from collections.abc import Iterable
 
 import httpx
-from sqlalchemy import delete, select
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.featured_new_release import FeaturedNewRelease
-from app.models.track import Track
 from app.services.catalog import search_catalog
-from app.services.catalog.bandcamp_source import BandcampCatalogSource
 from app.services.catalog.engine import SOURCE_REGISTRY
-from app.services.catalog.jamendo_source import JamendoCatalogSource
-from app.services.catalog.lastfm_source import WEEKDAY_MOOD_TAGS, collect_lastfm_mood_tracks
+from app.services.catalog.hitmotop_source import HitmotopCatalogSource
+from app.services.catalog.search_pipeline import sanitize_track
 from app.services.external_track import ExternalTrack
-from app.services.track_availability import filter_tracks_by_availability
 from app.services.track_upsert import upsert_external_tracks
 
 logger = logging.getLogger(__name__)
 
-# Several catalog searches per activity so results are varied and closer to real use cases.
 CONTEXT_QUERY_BATCHES: dict[str, list[str]] = {
     "work": [
         "lofi hip hop beats instrumental focus no lyrics",
@@ -70,7 +64,6 @@ _CONTEXT_LABELS: dict[str, str] = {
 
 _CONTEXT_ORDER = ("work", "study", "sport", "run", "relax", "party")
 
-# Presets for /discovery/meta (first seed = default hint).
 DAILY_CONTEXTS: list[dict[str, str]] = [
     {
         "id": cid,
@@ -80,36 +73,13 @@ DAILY_CONTEXTS: list[dict[str, str]] = [
     for cid in _CONTEXT_ORDER
 ]
 
-_WEEKDAY_MOOD_QUERIES = [
-    "monday motivation energy pop",
-    "tuesday calm acoustic",
-    "wednesday electronic focus",
-    "thursday indie rock",
-    "friday dance weekend",
-    "saturday chill beats",
-    "sunday jazz relax",
-]
-
-# Second search per weekday to widen the pool (same index as weekday).
-_WEEKDAY_ALT_QUERIES = [
-    "indie pop fresh start upbeat",
-    "piano ambient soft background",
-    "synth electronic productive flow",
-    "alternative rock energetic",
-    "disco funk friday night",
-    "reggae chill saturday lazy",
-    "bossa nova sunday relax",
-]
-
-
 def catalog_source_ids() -> list[str]:
     return sorted(SOURCE_REGISTRY.keys())
 
 
 def weekday_mood_query() -> str:
-    wd = datetime.date.today().weekday()
-    tags = WEEKDAY_MOOD_TAGS[wd % len(WEEKDAY_MOOD_TAGS)]
-    return f"Last.fm · {', '.join(tags)}"
+    p = (settings.hitmotop_charts_path or "/2026").strip() or "/2026"
+    return f"Hitmotop · {p}"
 
 
 def parse_sources_filter(raw: str | None) -> set[str] | None:
@@ -162,21 +132,25 @@ async def collect_discovery_picks(
     context: str | None,
     limit: int,
 ) -> tuple[list[ExternalTrack], str, str | None]:
-    """
-    Merge several `search_catalog` calls so home picks are not two duplicate mock rows.
-    Re-rank by the primary seed; dedupe by cross-source fingerprint where possible.
-    """
-    from app.services.catalog.relevance import rank_by_relevance
-    from app.services.catalog.search_pipeline import (
-        normalize_track_metadata,
-        sanitize_track,
-        track_fingerprint,
-    )
-
     m = (mode or "weekday").strip().lower()
-    ctx_id: str | None = None
-    display_name: str
-    seeds: list[str]
+
+    async def _from_seeds(
+        seeds: list[str],
+        display_name: str,
+        ctx_id: str | None,
+    ) -> tuple[list[ExternalTrack], str, str | None]:
+        n_seeds = max(1, len(seeds))
+        per_seed = max(12, min(30, (limit * 3) // n_seeds + 10))
+        merged: list[ExternalTrack] = []
+        for sq in seeds:
+            try:
+                chunk = await search_catalog(client, sq, offset=0, limit=per_seed)
+                merged.extend(chunk)
+            except Exception as exc:
+                logger.warning("discovery picks seed failed %r: %s", sq, exc)
+        merged = dedupe_external(merged)
+        out = [sanitize_track(t) for t in merged][:limit]
+        return out, display_name, ctx_id
 
     if m == "context":
         if not context or not context.strip():
@@ -185,103 +159,35 @@ async def collect_discovery_picks(
         if cid not in CONTEXT_QUERY_BATCHES:
             raise ValueError("unknown_context")
         seeds = list(CONTEXT_QUERY_BATCHES[cid])
-        display_name = _CONTEXT_LABELS[cid]
-        ctx_id = cid
-    else:
-        # «День недели»: только Last.fm (чарты + теги) → воспроизведение через Zaycev/Hitmotop.
-        merged_lf, label_lf = await collect_lastfm_mood_tracks(client, limit=limit)
-        out_lf: list[ExternalTrack] = []
-        seen_fp_lf: set[str] = set()
-        for t in merged_lf:
-            fp = track_fingerprint(t)
-            if fp in seen_fp_lf:
-                continue
-            seen_fp_lf.add(fp)
-            out_lf.append(sanitize_track(normalize_track_metadata(t, query=label_lf)))
-            if len(out_lf) >= limit:
-                break
-        return out_lf, label_lf, None
+        return await _from_seeds(seeds, _CONTEXT_LABELS[cid], cid)
 
-    n_seeds = max(1, len(seeds))
-    per_seed = max(12, min(30, (limit * 3) // n_seeds + 10))
-    merged: list[ExternalTrack] = []
-    for sq in seeds:
+    src = SOURCE_REGISTRY.get("hitmotop")
+    if isinstance(src, HitmotopCatalogSource):
         try:
-            chunk = await search_catalog(client, sq, offset=0, limit=per_seed)
-            merged.extend(chunk)
+            rows = await src.fetch_chart_tracks(client, offset=0, limit=limit)
         except Exception as exc:
-            logger.warning("discovery picks seed failed %r: %s", sq, exc)
-
-    merged = dedupe_external(merged)
-    if not merged:
-        return [], display_name, ctx_id
-
-    rank_key = seeds[0]
-    ranked = rank_by_relevance(rank_key, merged)
-    ranked.sort(key=lambda x: (-x[0], x[1].title.casefold()))
-
-    out: list[ExternalTrack] = []
-    seen_fp: set[str] = set()
-    for _, t in ranked:
-        fp = track_fingerprint(t)
-        if fp in seen_fp:
-            continue
-        seen_fp.add(fp)
-        fixed = sanitize_track(normalize_track_metadata(t, query=rank_key))
-        out.append(fixed)
-        if len(out) >= limit:
-            break
-
-    return out, display_name, ctx_id
+            logger.warning("hitmotop charts failed: %s", exc)
+            rows = []
+        return rows, weekday_mood_query(), None
+    return [], weekday_mood_query(), None
 
 
 async def collect_new_release_candidates(client: httpx.AsyncClient) -> list[ExternalTrack]:
-    """Harvest «new» style tracks across Jamendo, multi-seed search, Bandcamp, mock."""
-    merged: list[ExternalTrack] = []
-
-    jamendo = JamendoCatalogSource()
-    tags = ["pop", "electronic", "hiphop", "rock", "indie", "jazz", "ambient", "folk", "metal"]
-    merged.extend(await jamendo.recent_by_tags(client, tags=tags, per_tag=6))
-
-    extra_seeds = [
-        "new releases",
-        "new single 2025",
-        "fresh music",
-        "новинки музыки",
-        "new album",
-        settings.discovery_new_seed_query,
-    ]
-
-    async def _seed(s: str) -> list[ExternalTrack]:
+    src = SOURCE_REGISTRY.get("hitmotop")
+    if isinstance(src, HitmotopCatalogSource):
         try:
-            return await search_catalog(client, s, offset=0, limit=14)
+            rows = await src.fetch_chart_tracks(
+                client,
+                offset=0,
+                limit=settings.new_releases_max_collect,
+            )
+            return dedupe_external(rows)
         except Exception as exc:
-            logger.warning("new-release seed %r failed: %s", s, exc)
-            return []
-
-    batches = await asyncio.gather(*[_seed(s) for s in extra_seeds], return_exceptions=True)
-    for b in batches:
-        if isinstance(b, list):
-            merged.extend(b)
-
-    try:
-        bc = BandcampCatalogSource()
-        merged.extend(await bc.search(client, "new music", offset=0, limit=12))
-    except Exception as exc:
-        logger.debug("bandcamp new-release harvest: %s", exc)
-
-    mock = SOURCE_REGISTRY.get("mock")
-    if mock is not None:
-        try:
-            merged.extend(await mock.search(client, "", offset=0, limit=6))  # type: ignore[union-attr]
-        except Exception:
-            pass
-
-    return dedupe_external(merged)[: settings.new_releases_max_collect]
+            logger.warning("hitmotop new-release chart failed: %s", exc)
+    return []
 
 
 async def refresh_featured_new_releases(db: AsyncSession, client: httpx.AsyncClient) -> int:
-    """Replace featured_new_releases from fresh catalog pulls. Returns number of rows."""
     candidates = await collect_new_release_candidates(client)
     if not candidates:
         await db.execute(delete(FeaturedNewRelease))
@@ -289,7 +195,6 @@ async def refresh_featured_new_releases(db: AsyncSession, client: httpx.AsyncCli
         return 0
 
     tracks = await upsert_external_tracks(db, candidates[: settings.new_releases_store_limit])
-    tracks = await filter_tracks_by_availability(client, tracks)
     await db.execute(delete(FeaturedNewRelease))
     for i, tr in enumerate(tracks):
         db.add(FeaturedNewRelease(track_id=tr.id, position=i))

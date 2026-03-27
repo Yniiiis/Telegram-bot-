@@ -8,7 +8,6 @@ import httpx
 
 from app.models.track import Track
 from app.services.catalog import search_catalog
-from app.services.catalog.relevance import rank_by_relevance
 from app.services.discovery import dedupe_external
 from app.services.external_track import ExternalTrack
 
@@ -49,10 +48,6 @@ async def collect_similar_catalog_tracks(
     *,
     pool: int = 40,
 ) -> list[ExternalTrack]:
-    """
-    Merge several catalog searches around the seed artist (and a tight title hint).
-    Results are ranked by relevance to artist + title; caller upserts and filters availability.
-    """
     art = (seed.artist or "").strip()
     ttl = (seed.title or "").strip()
     skip_key = (seed.source, seed.external_id)
@@ -80,11 +75,4 @@ async def collect_similar_catalog_tracks(
 
     merged = dedupe_external(merged)
     merged = [t for t in merged if (t.source, t.external_id) != skip_key]
-    if not merged:
-        return []
-
-    rank_key = f"{art} {ttl}".strip() or ttl or art
-    ranked = rank_by_relevance(rank_key, merged)
-    ranked.sort(key=lambda x: (-x[0], x[1].title.casefold()))
-    out = [t for _, t in ranked]
-    return out[:pool]
+    return merged[:pool]

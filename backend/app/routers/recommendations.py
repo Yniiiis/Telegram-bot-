@@ -12,7 +12,6 @@ from app.models.user import User
 from app.schemas.discovery import TrackListResponse
 from app.schemas.track import TrackOut
 from app.services.similar_tracks import collect_similar_catalog_tracks
-from app.services.track_availability import filter_tracks_by_availability
 from app.services.track_upsert import upsert_external_tracks
 
 logger = logging.getLogger(__name__)
@@ -28,7 +27,6 @@ async def similar_to_track(
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ) -> TrackListResponse:
-    """Tracks from catalog search ranked like the seed artist/title (for radio / auto-queue)."""
     track = await db.get(Track, track_id)
     if track is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Track not found")
@@ -44,6 +42,5 @@ async def similar_to_track(
         return TrackListResponse(tracks=[])
 
     upserted = await upsert_external_tracks(db, external)
-    filtered = await filter_tracks_by_availability(client, upserted)
-    ordered = [t for t in filtered if t.id != track.id][:limit]
+    ordered = [t for t in upserted if t.id != track.id][:limit]
     return TrackListResponse(tracks=[TrackOut.model_validate(t) for t in ordered])
