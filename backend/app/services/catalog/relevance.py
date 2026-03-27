@@ -6,6 +6,7 @@ import re
 import unicodedata
 from difflib import SequenceMatcher
 
+from app.config import settings
 from app.services.external_track import ExternalTrack
 
 
@@ -102,7 +103,19 @@ def relevance_score(query: str, title: str, artist: str) -> float:
     )
 
 
+def _source_playback_tie_index(source: str) -> int:
+    """Lower index = preferred when relevance ties (Zaycev/Hitmotop before YouTube for fast start)."""
+    raw = (settings.search_source_priority or "").strip()
+    parts = [p.strip().lower() for p in raw.split(",") if p.strip()]
+    try:
+        return parts.index(source.strip().lower())
+    except ValueError:
+        return 999
+
+
 def rank_by_relevance(query: str, tracks: list[ExternalTrack]) -> list[tuple[float, ExternalTrack]]:
     scored = [(relevance_score(query, t.title, t.artist), t) for t in tracks]
-    scored.sort(key=lambda x: (-x[0], x[1].title.casefold()))
+    scored.sort(
+        key=lambda x: (-x[0], _source_playback_tie_index(x[1].source), x[1].title.casefold()),
+    )
     return scored

@@ -208,7 +208,7 @@ export function warmTrackPlayback(token: string, trackId: string): void {
   });
 }
 
-export function warmTrackPlaybackBatch(token: string, trackIds: string[], maxTracks = 12): void {
+export function warmTrackPlaybackBatch(token: string, trackIds: string[], maxTracks = 15): void {
   for (const id of trackIds.slice(0, maxTracks)) {
     warmTrackPlayback(token, id);
   }

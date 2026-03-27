@@ -41,9 +41,9 @@ SOURCE_REGISTRY: dict[str, CatalogSource] = {
 def _provider_chain() -> list[str]:
     raw = (settings.catalog_provider_chain or "").strip()
     if not raw:
-        return ["zaycev", "hitmotop", "jamendo", "youtube_music", "soundcloud", "mock"]
+        return ["zaycev", "hitmotop", "jamendo", "soundcloud", "lastfm", "bandcamp", "youtube_music", "mock"]
     parts = [p.strip().lower() for p in raw.split(",") if p.strip()]
-    return parts or ["zaycev", "hitmotop", "jamendo", "youtube_music", "soundcloud", "mock"]
+    return parts or ["zaycev", "hitmotop", "jamendo", "soundcloud", "lastfm", "bandcamp", "youtube_music", "mock"]
 
 
 def _dedupe_best_score(
@@ -107,7 +107,22 @@ async def search_catalog(
 
         return merged_raw
 
-    per_provider = await asyncio.gather(*[_search_one(n) for n in chain])
+    timeout_sec = settings.catalog_search_provider_timeout_sec
+
+    async def _search_one_maybe_timed(name: str) -> list[ExternalTrack]:
+        if timeout_sec is None or timeout_sec <= 0:
+            return await _search_one(name)
+        try:
+            return await asyncio.wait_for(_search_one(name), timeout=timeout_sec)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "catalog provider %s search exceeded %.1fs — skipped for this request",
+                name,
+                timeout_sec,
+            )
+            return []
+
+    per_provider = await asyncio.gather(*[_search_one_maybe_timed(n) for n in chain])
 
     collected_batches: list[list[tuple[float, ExternalTrack]]] = []
     for raw in per_provider:
