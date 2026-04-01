@@ -1,3 +1,4 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -7,6 +8,13 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/music_bot"
     telegram_bot_token: str
     jwt_secret: str
+
+    @field_validator("telegram_bot_token", "jwt_secret", mode="before")
+    @classmethod
+    def strip_secrets(cls, v: str) -> str:
+        if isinstance(v, str):
+            return v.strip()
+        return v
     jwt_expire_minutes: int = 60 * 24 * 7
 
     hitmotop_base_url: str = "https://rus.hitmotop.com"
