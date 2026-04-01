@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.track import Track
 
-StreamKind = Literal["youtube", "direct"]
+StreamKind = Literal["direct"]
 
 
 class PlaybackResolveError(Exception):

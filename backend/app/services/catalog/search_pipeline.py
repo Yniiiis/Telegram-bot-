@@ -74,8 +74,8 @@ def split_combined_title(title: str) -> tuple[str, str] | None:
 
 def split_space_using_query(title: str, query: str) -> tuple[str, str] | None:
     """
-    Zaycev / др.: в поле названия часто «Километры Кишлак» без дефиса, а артист Unknown.
-    Если запрос — «кишлак», отрезаем совпадающий суффикс/префикс как артиста.
+    Когда в названии нет «—», а артист в метаданных слабый: по совпадению с запросом
+    отрезаем суффикс/префикс как кандидата на имя артиста.
     """
     fq = fold_text(query or "")
     if len(fq) < 2:

@@ -1,4 +1,4 @@
-"""Home discovery: contexts, new-release refresh (catalog sources re-added in engine)."""
+"""Home discovery: contexts, new-release refresh (Hitmotop catalog only)."""
 
 from __future__ import annotations
 

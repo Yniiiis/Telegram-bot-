@@ -10,7 +10,7 @@ class ExternalTrack:
     duration_sec: int | None
     audio_url: str
     cover_url: str | None
-    """Creative Commons / license info page when provided by the catalog (e.g. Jamendo)."""
+    """License / terms URL when provided by the catalog source."""
     license_url: str | None = None
     """Short license label for display (e.g. cc-by-nc)."""
     license_short: str | None = None

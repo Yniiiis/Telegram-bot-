@@ -33,7 +33,7 @@ async def prepare_track_playback(
     _user: User = Depends(get_current_user),
 ) -> Response:
     """
-    Warm resolution (yt-dlp, Zaycev play URL, SoundCloud refresh) before the user taps play.
+    Warm Hitmotop playback URL resolution before the user taps play.
     Safe to call in parallel from the Mini App after search results arrive.
     """
     track = await db.get(Track, track_id)

@@ -19,7 +19,6 @@ class Settings(BaseSettings):
     hitmotop_page_size: int = 48
     # Optional: https://gde-hitmo.org/ — resolve current mirror (see jademusic hitmo/url.py).
     hitmotop_mirror_lookup_url: str | None = None
-    catalog_provider_chain: str = "hitmotop"
 
     new_releases_refresh_sec: int = 86400
     new_releases_user_touch_sec: int = 900
@@ -30,6 +29,33 @@ class Settings(BaseSettings):
     stream_connect_timeout_sec: float = 5.0
     stream_read_timeout_sec: float = 90.0
     stream_cache_dir: str | None = None
+
+    # httpx: catalog (Hitmotop HTML) — pooled keep-alive, bounded concurrency
+    httpx_catalog_max_connections: int = 48
+    httpx_catalog_max_keepalive: int = 24
+    httpx_catalog_timeout_sec: float = 60.0
+
+    # httpx: MP3 relay — separate pool from catalog (avoids starving search vs many streams)
+    httpx_stream_max_connections: int = 96
+    httpx_stream_max_keepalive: int = 48
+
+    # In-memory search cache (LRU + TTL)
+    search_cache_ttl_sec: float = 300.0
+    search_cache_max_entries: int = 512
+
+    # API rate limit (0 = off). Applies to /search* and /stream/* per client IP / X-Forwarded-For.
+    api_rate_limit_per_minute: int = 0
+
+    # Hitmotop HTTP: retry on 429 / transient errors
+    hitmotop_http_max_attempts: int = 3
+    hitmotop_http_retry_backoff_sec: float = 0.6
+
+    # Quick search (Mini App): shorter upstream timeout, smaller default cap from router
+    hitmotop_search_quick_timeout_sec: float = 12.0
+    hitmotop_search_normal_timeout_sec: float = 22.0
+
+    # Observability
+    hitmotop_log_parse_ms: bool = True
 
     allow_dev_auth: bool = False
 

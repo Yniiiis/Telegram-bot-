@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.db.session import SessionLocal, init_db
+from app.middleware.metrics import MetricsMiddleware
+from app.middleware.rate_limit import RateLimitMiddleware
 from app.routers import auth, discovery, favorites, history, playlists, recommendations, search, stream, tracks
 
 logger = logging.getLogger(__name__)
@@ -33,11 +35,32 @@ async def _new_releases_refresh_loop(app: FastAPI) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    limits_catalog = httpx.Limits(
+        max_connections=max(8, settings.httpx_catalog_max_connections),
+        max_keepalive_connections=max(4, settings.httpx_catalog_max_keepalive),
+    )
+    limits_stream = httpx.Limits(
+        max_connections=max(8, settings.httpx_stream_max_connections),
+        max_keepalive_connections=max(4, settings.httpx_stream_max_keepalive),
+    )
+    catalog_timeout = httpx.Timeout(max(5.0, settings.httpx_catalog_timeout_sec))
+    stream_timeout = httpx.Timeout(
+        settings.stream_read_timeout_sec,
+        connect=settings.stream_connect_timeout_sec,
+    )
+
     async with httpx.AsyncClient(
         headers={"User-Agent": "TelegramMusicCatalog/1.0"},
-        timeout=httpx.Timeout(60.0),
-    ) as client:
-        app.state.http_client = client
+        timeout=catalog_timeout,
+        limits=limits_catalog,
+        follow_redirects=True,
+    ) as catalog_client, httpx.AsyncClient(
+        timeout=stream_timeout,
+        limits=limits_stream,
+        follow_redirects=True,
+    ) as stream_client:
+        app.state.http_client = catalog_client
+        app.state.stream_http_client = stream_client
         task = asyncio.create_task(_new_releases_refresh_loop(app))
         try:
             yield
@@ -56,8 +79,12 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["content-length", "content-range", "accept-ranges"],
+    expose_headers=["content-length", "content-range", "accept-ranges", "x-response-time-ms"],
 )
+
+app.add_middleware(MetricsMiddleware)
+if settings.api_rate_limit_per_minute > 0:
+    app.add_middleware(RateLimitMiddleware, per_minute=settings.api_rate_limit_per_minute)
 
 app.include_router(auth.router)
 app.include_router(discovery.router)

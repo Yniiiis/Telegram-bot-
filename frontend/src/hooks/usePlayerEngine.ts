@@ -223,7 +223,7 @@ export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
 
       const hint =
         code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED
-          ? "This audio format is not supported in Telegram’s player. Try another track or a non‑YouTube source."
+          ? "This audio format is not supported in Telegram’s player. Try another track from Hitmotop search."
           : code === MediaError.MEDIA_ERR_NETWORK
             ? "Network error while loading audio. Check connection and try again."
             : "This track could not be played (unavailable or blocked). Try another track or tap play again.";

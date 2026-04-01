@@ -27,7 +27,7 @@ async def hitmotop_charts_feed(
     """Tracks from Hitmotop list page (see HITMOTOP_CHARTS_PATH, default /2026)."""
     client = request.app.state.http_client
 
-    cached = await get_cached(_FEED_CACHE_Q, offset, limit, artist_focus=False)
+    cached = await get_cached(_FEED_CACHE_Q, offset, limit, artist_focus=False, quick=False)
     if cached is not None:
         external = cached
         # Cache stores rows only; treat full page as maybe more (same as text search cache).
@@ -37,7 +37,7 @@ async def hitmotop_charts_feed(
         if not isinstance(src, HitmotopCatalogSource):
             return SearchResponse(tracks=[], offset=offset, limit=limit, has_more=False)
         external, has_more = await src.chart_tracks_slice(client, offset, limit)
-        await set_cached(_FEED_CACHE_Q, offset, limit, external, artist_focus=False)
+        await set_cached(_FEED_CACHE_Q, offset, limit, external, artist_focus=False, quick=False)
 
     tracks = await upsert_external_tracks(db, external)
     tracks = tracks[:limit]
@@ -59,26 +59,39 @@ async def search_music(
         False,
         description="Reserved for future catalog tuning",
     ),
+    quick: bool = Query(
+        False,
+        description="Mini App: shorter Hitmotop timeout; combine with limit≤15 for faster first paint",
+    ),
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(get_current_user),
 ) -> SearchResponse:
     client = request.app.state.http_client
 
-    cached = await get_cached(q, offset, limit, artist_focus=artist_focus)
+    eff_limit = limit
+    if quick:
+        eff_limit = min(limit, 15)
+
+    cached = await get_cached(q, offset, eff_limit, artist_focus=artist_focus, quick=quick)
     if cached is not None:
         external = cached
     else:
         external = await search_catalog(
-            client, q, offset=offset, limit=limit, artist_focus=artist_focus
+            client,
+            q,
+            offset=offset,
+            limit=eff_limit,
+            artist_focus=artist_focus,
+            quick=quick,
         )
-        await set_cached(q, offset, limit, external, artist_focus=artist_focus)
+        await set_cached(q, offset, eff_limit, external, artist_focus=artist_focus, quick=quick)
 
     tracks = await upsert_external_tracks(db, external)
-    tracks = tracks[:limit]
-    has_more = len(external) >= limit
+    tracks = tracks[:eff_limit]
+    has_more = len(external) >= eff_limit
     return SearchResponse(
         tracks=[TrackOut.model_validate(t) for t in tracks],
         offset=offset,
-        limit=limit,
+        limit=eff_limit,
         has_more=has_more,
     )

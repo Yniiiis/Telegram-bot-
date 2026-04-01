@@ -1,11 +1,10 @@
-import asyncio
 import logging
 
 import httpx
 
-from app.config import settings
 from app.services.catalog.hitmotop_source import HitmotopCatalogSource
 from app.services.catalog.protocol import CatalogSource
+from app.services.catalog.request_coalesce import coalesce
 from app.services.external_track import ExternalTrack
 
 logger = logging.getLogger(__name__)
@@ -16,19 +15,15 @@ SOURCE_REGISTRY: dict[str, CatalogSource] = {
     "hitmotop": _hitmotop,
 }
 
-_DEFAULT_CHAIN: list[str] = ["hitmotop"]
-
-
-def _provider_chain() -> list[str]:
-    raw = (settings.catalog_provider_chain or "").strip()
-    if not raw:
-        return list(_DEFAULT_CHAIN)
-    parts = [p.strip().lower() for p in raw.split(",") if p.strip()]
-    return parts or list(_DEFAULT_CHAIN)
-
 
 def get_catalog_provider_chain() -> list[str]:
-    return _provider_chain()
+    return ["hitmotop"]
+
+
+def _search_coalesce_key(query: str, offset: int, limit: int, *, artist_focus: bool, quick: bool) -> str:
+    af = "1" if artist_focus else "0"
+    qk = "1" if quick else "0"
+    return f"hitmotop\t{query.strip().lower()}\t{offset}\t{limit}\t{af}\t{qk}"
 
 
 async def search_catalog(
@@ -38,33 +33,18 @@ async def search_catalog(
     offset: int = 0,
     limit: int = 20,
     artist_focus: bool = False,
+    quick: bool = False,
 ) -> list[ExternalTrack]:
     _ = artist_focus
-    if not SOURCE_REGISTRY:
-        return []
+    key = _search_coalesce_key(query, offset, limit, artist_focus=artist_focus, quick=quick)
 
-    chain = _provider_chain()
-    if not chain:
-        return []
-
-    async def _one(name: str) -> list[ExternalTrack]:
-        src = SOURCE_REGISTRY.get(name)
-        if src is None:
-            logger.warning("unknown catalog provider %r — skipped", name)
-            return []
+    async def _run() -> list[ExternalTrack]:
         try:
-            return await src.search(client, query.strip(), offset=offset, limit=limit)
+            return await _hitmotop.search(
+                client, query.strip(), offset=offset, limit=limit, quick=quick
+            )
         except Exception as exc:
-            logger.warning("catalog provider %s search failed: %s", name, exc)
+            logger.warning("hitmotop search failed: %s", exc)
             return []
 
-    chunks = await asyncio.gather(*[_one(n) for n in chain])
-    out: list[ExternalTrack] = []
-    seen: set[tuple[str, str]] = set()
-    for chunk in chunks:
-        for t in chunk:
-            k = (t.source, t.external_id)
-            if k not in seen:
-                seen.add(k)
-                out.append(t)
-    return out[:limit]
+    return await coalesce(key, _run)

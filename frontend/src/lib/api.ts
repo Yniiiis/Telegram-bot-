@@ -214,7 +214,7 @@ export async function searchTracks(token: string, q: string, limit = 25): Promis
   return page.tracks;
 }
 
-/** Fire-and-forget: resolves yt-dlp / Zaycev / SoundCloud URLs on the server before the user taps play. */
+/** Fire-and-forget: прогревает разрешение URL воспроизведения Hitmotop на сервере до нажатия play. */
 export function warmTrackPlayback(token: string, trackId: string): void {
   void apiFetch(`${base()}/track/${trackId}/prepare`, {
     method: "POST",

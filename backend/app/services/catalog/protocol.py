@@ -15,5 +15,6 @@ class CatalogSource(Protocol):
         *,
         offset: int,
         limit: int,
+        quick: bool = False,
     ) -> list[ExternalTrack]:
         ...

@@ -1,20 +1,15 @@
 """
 Hitmotop / Hitmo HTML catalog.
 
-Parsing aligned with JadeMusic API (jademusic-api) selectors and search pagination:
-https://github.com/nshib00/jademusic-api — div.track__info, a.track__download-btn,
-search URL pattern /search/start/{n}?q= (step = hitmotop_page_size, default 48).
-Fallback: legacy walk of /song/ + /get/music/*.mp3 anchors.
+Parsing: `music_provider.hitmotop_parse` (lxml XPath + BS4/lxml fallback).
+HTTP: retries + backoff on 429/5xx (see config).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import time
-import zlib
-from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -23,6 +18,7 @@ from app.config import settings
 from app.services.catalog.protocol import CatalogSource
 from app.services.catalog.search_pipeline import normalize_track_metadata, sanitize_track
 from app.services.external_track import ExternalTrack
+from app.services.music_provider.hitmotop_parse import extract_track_pairs
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +26,6 @@ _BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 )
-
-# JadeMusic: generics/html.py
-_JADE_TRACK_ROOT = "div.track__info"
-_JADE_DL = "a.track__download-btn"
-_JADE_ARTIST = "div.track__desc"
-_JADE_TITLE = "div.track__title"
 
 _mirror_lock = asyncio.Lock()
 _cached_mirror: tuple[str, float] | None = None
@@ -51,80 +41,6 @@ def _hitmotop_headers(base: str) -> dict[str, str]:
         "Referer": f"{b}/",
         "Accept-Encoding": "gzip, deflate, br",
     }
-
-
-def _id_from_mp3(mp3: str) -> str:
-    m = re.search(r"/(\d+)\.mp3", mp3, re.IGNORECASE)
-    if m:
-        return m.group(1)
-    return str(zlib.adler32(mp3.encode("utf-8", errors="ignore")) & 0x7FFFFFFF)
-
-
-def _pairs_jade(soup: BeautifulSoup, base: str) -> list[tuple[str, str, str, str]]:
-    """(external_id, title, mp3_url, artist) via JadeMusic-style DOM."""
-    out: list[tuple[str, str, str, str]] = []
-    for div in soup.select(_JADE_TRACK_ROOT):
-        dl = div.select_one(_JADE_DL)
-        if not dl:
-            continue
-        href = (dl.get("href") or "").strip()
-        if not href or ".mp3" not in href.lower():
-            continue
-        mp3 = urljoin(base, href)
-        artist_el = div.select_one(_JADE_ARTIST)
-        title_el = div.select_one(_JADE_TITLE)
-        artist = " ".join(artist_el.get_text().split()) if artist_el else "Unknown"
-        title = " ".join(title_el.get_text().split()) if title_el else "Unknown"
-
-        sid: str | None = None
-        for la in div.select('a[href*="/song/"]'):
-            m = re.search(r"/song/(\d+)", la.get("href") or "")
-            if m:
-                sid = m.group(1)
-                break
-        if not sid:
-            sid = _id_from_mp3(mp3)
-
-        out.append((sid, title, mp3, artist or "Unknown"))
-    return out
-
-
-def _pairs_legacy_soup(soup: BeautifulSoup, base: str) -> list[tuple[str, str, str, str]]:
-    out: list[tuple[str, str, str, str]] = []
-    pending_id: str | None = None
-    pending_title: str | None = None
-
-    for a in soup.find_all("a"):
-        href = (a.get("href") or "").strip()
-        if not href:
-            continue
-        text = " ".join((a.get_text() or "").split()).strip()
-
-        if "/song/" in href:
-            path = urlparse(href).path
-            part = path.split("/song/")[-1].split("/")[0]
-            if part.isdigit():
-                pending_id = part
-                pending_title = text or "Unknown"
-            continue
-
-        if "/get/music/" in href and href.lower().endswith(".mp3") and pending_id:
-            mp3 = urljoin(base, href)
-            title = pending_title or "Unknown"
-            out.append((pending_id, title, mp3, "Unknown"))
-            pending_id = None
-            pending_title = None
-
-    return out
-
-
-def _all_pairs(html: str, base: str) -> list[tuple[str, str, str, str]]:
-    soup = BeautifulSoup(html, "html.parser")
-    if settings.hitmotop_use_jade_selectors:
-        jade = _pairs_jade(soup, base)
-        if jade:
-            return jade
-    return _pairs_legacy_soup(soup, base)
 
 
 def _tracks_from_pairs(
@@ -158,7 +74,6 @@ def _tracks_from_pairs(
 
 
 async def _resolve_effective_base(client: httpx.AsyncClient) -> str:
-    """Optional mirror from gde-hitmo.org (JadeMusic url.py); else configured base."""
     configured = (settings.hitmotop_base_url or "https://rus.hitmotop.com").rstrip("/")
     lookup = (settings.hitmotop_mirror_lookup_url or "").strip()
     if not lookup:
@@ -181,7 +96,7 @@ async def _resolve_effective_base(client: httpx.AsyncClient) -> str:
                 headers={"User-Agent": _BROWSER_UA, "Accept": "text/html,*/*"},
             )
             if r.status_code < 400 and r.text:
-                soup = BeautifulSoup(r.text, "html.parser")
+                soup = BeautifulSoup(r.text, "lxml")
                 a = soup.select_one("a.link.link--with-badge") or soup.select_one("a.link--with-badge")
                 href = (a.get("href") or "").strip() if a else ""
                 if href.startswith("http"):
@@ -195,7 +110,7 @@ async def _resolve_effective_base(client: httpx.AsyncClient) -> str:
 
 
 class HitmotopCatalogSource(CatalogSource):
-    """rus.hitmotop.com (+ optional mirror): Jade-style fast parse + /search/start pagination."""
+    """rus.hitmotop.com (+ optional mirror): fast parse + /search/start pagination."""
 
     async def _get_html(
         self,
@@ -206,21 +121,44 @@ class HitmotopCatalogSource(CatalogSource):
         params: dict[str, str] | None = None,
         timeout: float = 22.0,
     ) -> str | None:
-        try:
-            r = await client.get(
-                url,
-                params=params,
-                headers=_hitmotop_headers(base),
-                timeout=timeout,
-                follow_redirects=True,
-            )
-        except httpx.HTTPError as exc:
-            logger.warning("hitmotop request failed %s: %s", url[:96], exc)
-            return None
-        if r.status_code >= 400:
-            logger.info("hitmotop http %s for %s", r.status_code, url[:96])
-            return None
-        return r.text
+        headers = _hitmotop_headers(base)
+        attempts = max(1, settings.hitmotop_http_max_attempts)
+        backoff = max(0.05, settings.hitmotop_http_retry_backoff_sec)
+
+        for attempt in range(attempts):
+            try:
+                r = await client.get(
+                    url,
+                    params=params,
+                    headers=headers,
+                    timeout=timeout,
+                    follow_redirects=True,
+                )
+            except httpx.HTTPError as exc:
+                logger.warning("hitmotop request failed %s: %s", url[:96], exc)
+                if attempt + 1 < attempts:
+                    await asyncio.sleep(backoff * (2**attempt))
+                continue
+
+            if r.status_code == 429:
+                logger.info("hitmotop 429 %s attempt=%s", url[:96], attempt + 1)
+                if attempt + 1 < attempts:
+                    await asyncio.sleep(backoff * (2**attempt))
+                continue
+
+            if r.status_code >= 500:
+                logger.info("hitmotop http %s for %s", r.status_code, url[:96])
+                if attempt + 1 < attempts:
+                    await asyncio.sleep(backoff * (2**attempt))
+                continue
+
+            if r.status_code >= 400:
+                logger.info("hitmotop http %s for %s", r.status_code, url[:96])
+                return None
+
+            return r.text
+
+        return None
 
     async def _base_resolved(self, client: httpx.AsyncClient) -> str:
         return await _resolve_effective_base(client)
@@ -231,6 +169,7 @@ class HitmotopCatalogSource(CatalogSource):
         offset: int,
         limit: int,
     ) -> tuple[list[ExternalTrack], bool]:
+        t0 = time.perf_counter()
         base = await self._base_resolved(client)
         path = (settings.hitmotop_charts_path or "/2026").strip()
         if not path.startswith("/"):
@@ -239,7 +178,16 @@ class HitmotopCatalogSource(CatalogSource):
         html = await self._get_html(client, url, base, timeout=28.0)
         if not html:
             return [], False
-        pairs = _all_pairs(html, base)
+        t_parse0 = time.perf_counter()
+        pairs = extract_track_pairs(html, base)
+        parse_ms = (time.perf_counter() - t_parse0) * 1000.0
+        if settings.hitmotop_log_parse_ms:
+            logger.info(
+                "hitmotop chart parse_ms=%.1f pairs=%s total_ms=%.1f",
+                parse_ms,
+                len(pairs),
+                (time.perf_counter() - t0) * 1000.0,
+            )
         tracks = _tracks_from_pairs(pairs, base, "", offset=offset, limit=limit)
         start = max(0, offset)
         has_more = start + len(tracks) < len(pairs)
@@ -262,11 +210,18 @@ class HitmotopCatalogSource(CatalogSource):
         *,
         offset: int = 0,
         limit: int = 20,
+        quick: bool = False,
     ) -> list[ExternalTrack]:
         q = query.strip()
         if not q:
             return []
 
+        timeout = (
+            settings.hitmotop_search_quick_timeout_sec
+            if quick
+            else settings.hitmotop_search_normal_timeout_sec
+        )
+        t0 = time.perf_counter()
         base = await self._base_resolved(client)
         page_step = max(1, settings.hitmotop_page_size)
         pairs: list[tuple[str, str, str, str]] = []
@@ -275,19 +230,41 @@ class HitmotopCatalogSource(CatalogSource):
         if settings.hitmotop_search_start_pagination:
             page_start = (max(0, offset) // page_step) * page_step
             url = f"{base}/search/start/{page_start}"
-            html = await self._get_html(client, url, base, params={"q": q}, timeout=22.0)
+            html = await self._get_html(client, url, base, params={"q": q}, timeout=timeout)
             if html:
-                pairs = _all_pairs(html, base)
+                t_parse0 = time.perf_counter()
+                pairs = extract_track_pairs(html, base)
+                if settings.hitmotop_log_parse_ms:
+                    logger.info(
+                        "hitmotop search parse_ms=%.1f pairs=%s q=%r",
+                        (time.perf_counter() - t_parse0) * 1000.0,
+                        len(pairs),
+                        q[:48],
+                    )
                 from_pagination = bool(pairs)
 
         if not pairs:
-            html = await self._get_html(client, f"{base}/search", base, params={"q": q}, timeout=22.0)
+            html = await self._get_html(client, f"{base}/search", base, params={"q": q}, timeout=timeout)
             if html:
-                pairs = _all_pairs(html, base)
+                t_parse0 = time.perf_counter()
+                pairs = extract_track_pairs(html, base)
+                if settings.hitmotop_log_parse_ms:
+                    logger.info(
+                        "hitmotop search fallback parse_ms=%.1f pairs=%s",
+                        (time.perf_counter() - t_parse0) * 1000.0,
+                        len(pairs),
+                    )
             from_pagination = False
 
         if not pairs:
             return []
+
+        if settings.hitmotop_log_parse_ms:
+            logger.info(
+                "hitmotop search total_ms=%.1f results_slice=%s",
+                (time.perf_counter() - t0) * 1000.0,
+                min(limit, len(pairs)),
+            )
 
         if from_pagination and settings.hitmotop_search_start_pagination:
             page_start = (max(0, offset) // page_step) * page_step
