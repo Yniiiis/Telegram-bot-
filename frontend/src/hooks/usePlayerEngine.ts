@@ -101,9 +101,18 @@ export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
     const url = streamUrl(track.id, token);
 
     if (!isNgrokApiBase()) {
-      if (el.src !== url) {
+      const same =
+        el.querySelector("source")?.getAttribute("src") === url ||
+        el.src === url ||
+        el.currentSrc === url;
+      if (!same) {
         clearPlaybackError();
-        el.src = url;
+        el.removeAttribute("src");
+        while (el.firstChild) el.removeChild(el.firstChild);
+        const src = document.createElement("source");
+        src.src = url;
+        src.type = "audio/mpeg";
+        el.appendChild(src);
         el.load();
         playWhenBuffered(el, setPlaybackError);
       }
