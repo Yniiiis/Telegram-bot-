@@ -126,7 +126,15 @@ async def stream_track(
         finally:
             await stream_cm.__aexit__(None, None, None)
 
-    media_type = headers.pop("content-type", None) or "application/octet-stream"
+    media_type = (headers.pop("content-type", None) or "").split(";")[0].strip().lower()
+    if not media_type or media_type in ("application/octet-stream", "binary/octet-stream"):
+        if track.source == "hitmotop":
+            media_type = "audio/mpeg"
+        else:
+            media_type = "application/octet-stream"
+    elif track.source == "hitmotop" and not media_type.startswith("audio/"):
+        # Telegram WebView often rejects non-audio MIME even for .mp3 bytes.
+        media_type = "audio/mpeg"
 
     return StreamingResponse(
         body(),

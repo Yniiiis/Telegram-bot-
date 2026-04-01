@@ -24,7 +24,6 @@ export function AppShell() {
         <audio
           key={track?.id ?? "idle"}
           ref={audioRef as RefObject<HTMLAudioElement>}
-          crossOrigin="anonymous"
           playsInline
           preload="auto"
           className="hidden"
