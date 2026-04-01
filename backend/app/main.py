@@ -15,6 +15,29 @@ from app.routers import auth, discovery, favorites, history, playlists, recommen
 
 logger = logging.getLogger(__name__)
 
+_HITMOTOP_WARMUP_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+)
+
+
+async def _warmup_hitmotop_catalog(client: httpx.AsyncClient) -> None:
+    if not settings.hitmotop_warmup_on_startup:
+        return
+    base = (settings.hitmotop_base_url or "https://rus.hitmotop.com").rstrip("/")
+    headers = {
+        "User-Agent": _HITMOTOP_WARMUP_UA,
+        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+        "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+        "Referer": f"{base}/",
+        "Accept-Encoding": "gzip, deflate, br",
+    }
+    try:
+        await client.get(f"{base}/", headers=headers, timeout=8.0)
+        logger.debug("hitmotop catalog warmup finished")
+    except Exception:
+        logger.debug("hitmotop catalog warmup failed", exc_info=True)
+
 
 async def _new_releases_refresh_loop(app: FastAPI) -> None:
     from app.services.discovery import refresh_featured_new_releases
@@ -49,18 +72,23 @@ async def lifespan(app: FastAPI):
         connect=settings.stream_connect_timeout_sec,
     )
 
-    async with httpx.AsyncClient(
-        headers={"User-Agent": "TelegramMusicCatalog/1.0"},
-        timeout=catalog_timeout,
-        limits=limits_catalog,
-        follow_redirects=True,
-    ) as catalog_client, httpx.AsyncClient(
+    catalog_kw: dict = {
+        "headers": {"User-Agent": "TelegramMusicCatalog/1.0"},
+        "timeout": catalog_timeout,
+        "limits": limits_catalog,
+        "follow_redirects": True,
+    }
+    if settings.httpx_catalog_http2:
+        catalog_kw["http2"] = True
+
+    async with httpx.AsyncClient(**catalog_kw) as catalog_client, httpx.AsyncClient(
         timeout=stream_timeout,
         limits=limits_stream,
         follow_redirects=True,
     ) as stream_client:
         app.state.http_client = catalog_client
         app.state.stream_http_client = stream_client
+        asyncio.create_task(_warmup_hitmotop_catalog(catalog_client))
         task = asyncio.create_task(_new_releases_refresh_loop(app))
         try:
             yield

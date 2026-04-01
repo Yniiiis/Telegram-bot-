@@ -2,7 +2,7 @@
 Fast Hitmotop HTML → (external_id, title, mp3_url, artist) pairs.
 
 Primary path: lxml + XPath (single tree walk, no BeautifulSoup for Jade layout).
-Legacy path: BeautifulSoup with lxml parser (still faster than html.parser).
+Optional skip_valid/take_valid: stop after enough valid tracks (search hot path).
 """
 
 from __future__ import annotations
@@ -50,43 +50,69 @@ def _text(el) -> str:
     return " ".join("".join(el.itertext()).split())
 
 
-def _pairs_jade_lxml(html_text: str, base: str) -> list[tuple[str, str, str, str]]:
+def _pair_from_jade_div(div, base: str) -> tuple[str, str, str, str] | None:
+    dl = div.xpath(_DL_XPATH)
+    if not dl:
+        return None
+    href = (dl[0].get("href") or "").strip()
+    if not href or ".mp3" not in href.lower():
+        return None
+    mp3 = urljoin(base, href)
+
+    artist_el = div.xpath(_ARTIST_XPATH)
+    title_el = div.xpath(_TITLE_XPATH)
+    artist = _text(artist_el[0]) if artist_el else "Unknown"
+    title = _text(title_el[0]) if title_el else "Unknown"
+
+    sid: str | None = None
+    for la in div.xpath(_SONG_A_XPATH):
+        m = _SONG_ID_RE.search(la.get("href") or "")
+        if m:
+            sid = m.group(1)
+            break
+    if not sid:
+        sid = _id_from_mp3(mp3)
+
+    return (sid, title, mp3, artist or "Unknown")
+
+
+def _pairs_jade_lxml(
+    html_text: str,
+    base: str,
+    *,
+    skip_valid: int = 0,
+    take_valid: int | None = None,
+) -> list[tuple[str, str, str, str]]:
     out: list[tuple[str, str, str, str]] = []
     try:
-        doc = lhtml.fromstring(html_text)
+        doc = lhtml.fromstring(html_text.encode("utf-8"))
     except Exception as exc:
         logger.debug("lxml parse failed, fallback to bs4: %s", exc)
         return []
 
+    skip = max(0, skip_valid)
     for div in doc.xpath(_JADE_TRACK_XPATH):
-        dl = div.xpath(_DL_XPATH)
-        if not dl:
+        p = _pair_from_jade_div(div, base)
+        if p is None:
             continue
-        href = (dl[0].get("href") or "").strip()
-        if not href or ".mp3" not in href.lower():
+        if skip > 0:
+            skip -= 1
             continue
-        mp3 = urljoin(base, href)
-
-        artist_el = div.xpath(_ARTIST_XPATH)
-        title_el = div.xpath(_TITLE_XPATH)
-        artist = _text(artist_el[0]) if artist_el else "Unknown"
-        title = _text(title_el[0]) if title_el else "Unknown"
-
-        sid: str | None = None
-        for la in div.xpath(_SONG_A_XPATH):
-            m = _SONG_ID_RE.search(la.get("href") or "")
-            if m:
-                sid = m.group(1)
-                break
-        if not sid:
-            sid = _id_from_mp3(mp3)
-
-        out.append((sid, title, mp3, artist or "Unknown"))
+        out.append(p)
+        if take_valid is not None and len(out) >= take_valid:
+            break
     return out
 
 
-def _pairs_jade_bs4(soup: BeautifulSoup, base: str) -> list[tuple[str, str, str, str]]:
+def _pairs_jade_bs4(
+    soup: BeautifulSoup,
+    base: str,
+    *,
+    skip_valid: int = 0,
+    take_valid: int | None = None,
+) -> list[tuple[str, str, str, str]]:
     out: list[tuple[str, str, str, str]] = []
+    skip = max(0, skip_valid)
     for div in soup.select("div.track__info"):
         dl = div.select_one("a.track__download-btn")
         if not dl:
@@ -109,7 +135,12 @@ def _pairs_jade_bs4(soup: BeautifulSoup, base: str) -> list[tuple[str, str, str,
         if not sid:
             sid = _id_from_mp3(mp3)
 
+        if skip > 0:
+            skip -= 1
+            continue
         out.append((sid, title, mp3, artist or "Unknown"))
+        if take_valid is not None and len(out) >= take_valid:
+            break
     return out
 
 
@@ -142,15 +173,31 @@ def _pairs_legacy_soup(soup: BeautifulSoup, base: str) -> list[tuple[str, str, s
     return out
 
 
-def extract_track_pairs(html: str, base: str) -> list[tuple[str, str, str, str]]:
-    """Parse Hitmotop listing/search HTML into track tuples."""
+def extract_track_pairs(
+    html: str,
+    base: str,
+    *,
+    skip_valid: int = 0,
+    take_valid: int | None = None,
+) -> list[tuple[str, str, str, str]]:
+    """
+    Parse Hitmotop listing/search HTML into track tuples.
+
+    skip_valid: skip this many valid (downloadable) tracks.
+    take_valid: stop after this many valid tracks (None = all). Used on search to avoid scanning the whole page.
+    """
     if settings.hitmotop_use_jade_selectors:
-        jade = _pairs_jade_lxml(html, base)
+        jade = _pairs_jade_lxml(html, base, skip_valid=skip_valid, take_valid=take_valid)
         if jade:
             return jade
         soup = BeautifulSoup(html, "lxml")
-        jade_bs4 = _pairs_jade_bs4(soup, base)
+        jade_bs4 = _pairs_jade_bs4(soup, base, skip_valid=skip_valid, take_valid=take_valid)
         if jade_bs4:
             return jade_bs4
     soup = BeautifulSoup(html, "lxml")
-    return _pairs_legacy_soup(soup, base)
+    legacy = _pairs_legacy_soup(soup, base)
+    if skip_valid or take_valid is not None:
+        start = max(0, skip_valid)
+        end = start + take_valid if take_valid is not None else len(legacy)
+        return legacy[start:end]
+    return legacy

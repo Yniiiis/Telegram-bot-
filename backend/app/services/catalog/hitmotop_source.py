@@ -225,15 +225,18 @@ class HitmotopCatalogSource(CatalogSource):
         base = await self._base_resolved(client)
         page_step = max(1, settings.hitmotop_page_size)
         pairs: list[tuple[str, str, str, str]] = []
-        from_pagination = False
+        need = min(limit, 80)
 
         if settings.hitmotop_search_start_pagination:
             page_start = (max(0, offset) // page_step) * page_step
             url = f"{base}/search/start/{page_start}"
             html = await self._get_html(client, url, base, params={"q": q}, timeout=timeout)
             if html:
+                inner = max(0, offset - page_start)
                 t_parse0 = time.perf_counter()
-                pairs = extract_track_pairs(html, base)
+                pairs = extract_track_pairs(
+                    html, base, skip_valid=inner, take_valid=need
+                )
                 if settings.hitmotop_log_parse_ms:
                     logger.info(
                         "hitmotop search parse_ms=%.1f pairs=%s q=%r",
@@ -241,20 +244,20 @@ class HitmotopCatalogSource(CatalogSource):
                         len(pairs),
                         q[:48],
                     )
-                from_pagination = bool(pairs)
 
         if not pairs:
             html = await self._get_html(client, f"{base}/search", base, params={"q": q}, timeout=timeout)
             if html:
                 t_parse0 = time.perf_counter()
-                pairs = extract_track_pairs(html, base)
+                pairs = extract_track_pairs(
+                    html, base, skip_valid=max(0, offset), take_valid=need
+                )
                 if settings.hitmotop_log_parse_ms:
                     logger.info(
                         "hitmotop search fallback parse_ms=%.1f pairs=%s",
                         (time.perf_counter() - t_parse0) * 1000.0,
                         len(pairs),
                     )
-            from_pagination = False
 
         if not pairs:
             return []
@@ -266,10 +269,4 @@ class HitmotopCatalogSource(CatalogSource):
                 min(limit, len(pairs)),
             )
 
-        if from_pagination and settings.hitmotop_search_start_pagination:
-            page_start = (max(0, offset) // page_step) * page_step
-            inner = max(0, offset - page_start)
-            slice_pairs = pairs[inner : inner + min(limit, 80)]
-            return _tracks_from_pairs(slice_pairs, base, q, offset=0, limit=limit)
-
-        return _tracks_from_pairs(pairs, base, q, offset=offset, limit=limit)
+        return _tracks_from_pairs(pairs, base, q, offset=0, limit=limit)

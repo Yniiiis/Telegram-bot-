@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     httpx_catalog_max_connections: int = 48
     httpx_catalog_max_keepalive: int = 24
     httpx_catalog_timeout_sec: float = 60.0
+    # HTTP/2 + Brotli (smaller HTML, one connection); set false if upstream misbehaves
+    httpx_catalog_http2: bool = True
+    # One GET at startup to warm TLS + pool (cuts first-user latency)
+    hitmotop_warmup_on_startup: bool = True
 
     # httpx: MP3 relay — separate pool from catalog (avoids starving search vs many streams)
     httpx_stream_max_connections: int = 96
