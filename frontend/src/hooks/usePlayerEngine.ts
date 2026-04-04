@@ -5,7 +5,6 @@ import {
   getSimilarTracks,
   isNgrokApiBase,
   recordPlay,
-  reportClientDebug,
   streamUrl,
 } from "../lib/api";
 import { ensureNgrokStreamSw } from "../lib/ngrokStreamSw";
@@ -249,25 +248,6 @@ export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
       const st0 = usePlayerStore.getState();
       if (st0.queue[st0.index]?.id !== track.id) return;
 
-      void reportClientDebug(token, {
-        hypothesisId: "H4",
-        location: "usePlayerEngine.ts:onError",
-        message: "audio_element_error",
-        data: {
-          mediaErrorCode: code,
-          networkState: el.networkState,
-          readyState: el.readyState,
-          telegram: isTelegramWebApp(),
-          ngrok: isNgrokApiBase(),
-          blobFallbackEligible:
-            code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED &&
-            isTelegramWebApp() &&
-            !isNgrokApiBase() &&
-            !telegramBlobFallbackTried.current,
-          trackId: track.id,
-        },
-      });
-
       /* Telegram WebView often reports SRC_NOT_SUPPORTED for remote /stream URLs (chunked, MIME).
          One fetch→blob→objectURL retry usually plays the same bytes. */
       if (
@@ -295,16 +275,6 @@ export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
             playWhenBuffered(el, setPlaybackError);
           })
           .catch((err) => {
-            void reportClientDebug(token, {
-              hypothesisId: "H1",
-              location: "usePlayerEngine.ts:blobFetchCatch",
-              message: "blob_fallback_failed",
-              data: {
-                errName: err instanceof Error ? err.name : typeof err,
-                errMsg: err instanceof Error ? err.message : String(err),
-                aborted: streamLoadAbort.signal.aborted,
-              },
-            });
             if (streamLoadAbort.signal.aborted) return;
             if (err instanceof DOMException && err.name === "AbortError") return;
             const detail = safePlaybackErrDetail(err);

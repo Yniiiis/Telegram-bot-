@@ -11,7 +11,7 @@ from app.config import settings
 from app.db.session import SessionLocal, init_db
 from app.middleware.metrics import MetricsMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
-from app.routers import auth, client_debug, discovery, favorites, history, playlists, recommendations, search, stream, tracks
+from app.routers import auth, discovery, favorites, history, playlists, recommendations, search, stream, tracks
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +115,6 @@ if settings.api_rate_limit_per_minute > 0:
     app.add_middleware(RateLimitMiddleware, per_minute=settings.api_rate_limit_per_minute)
 
 app.include_router(auth.router)
-app.include_router(client_debug.router)
 app.include_router(discovery.router)
 app.include_router(search.router)
 app.include_router(history.router)

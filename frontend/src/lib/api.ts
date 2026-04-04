@@ -76,33 +76,6 @@ async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<R
   return fetch(input, { ...init, headers: mergeHeaders(init?.headers) });
 }
 
-/** Fire-and-forget diagnostics to API logs (journalctl on VPS). No secrets in payload. */
-export async function reportClientDebug(
-  token: string,
-  payload: {
-    hypothesisId?: string;
-    location: string;
-    message: string;
-    data?: Record<string, unknown>;
-  },
-): Promise<void> {
-  try {
-    const res = await apiFetch(`${base()}/client-debug`, {
-      method: "POST",
-      headers: { ...authHeader(token), "Content-Type": "application/json" },
-      body: JSON.stringify({
-        hypothesis_id: payload.hypothesisId,
-        location: payload.location,
-        message: payload.message,
-        data: payload.data,
-      }),
-    });
-    if (!res.ok) return;
-  } catch {
-    /* ignore */
-  }
-}
-
 export class ApiError extends Error {
   readonly status: number;
   readonly code?: string;
@@ -493,31 +466,13 @@ async function streamHttpErrorMessage(res: Response): Promise<string> {
  */
 export async function fetchStreamBlobForTelegram(
   url: string,
-  token: string,
+  _token: string,
   signal?: AbortSignal,
 ): Promise<Blob> {
   const fromResponse = async (res: Response): Promise<Blob> => {
     const ab = await res.arrayBuffer();
     return new Blob([ab], { type: STREAM_PLAYBACK_BLOB_TYPE });
   };
-
-  let host = "";
-  try {
-    host = new URL(url).hostname;
-  } catch {
-    host = "invalid-url";
-  }
-  void reportClientDebug(token, {
-    hypothesisId: "H1",
-    location: "api.ts:fetchStreamBlobForTelegram",
-    message: "start",
-    data: {
-      apiHost: host,
-      signalAborted: Boolean(signal?.aborted),
-      authMode: "query_only",
-      order: "fetch_first_xhr_fallback",
-    },
-  });
 
   try {
     const res = await apiFetch(url, {
@@ -529,53 +484,23 @@ export async function fetchStreamBlobForTelegram(
     });
     if (!res.ok) {
       const errMsg = await streamHttpErrorMessage(res);
-      void reportClientDebug(token, {
-        hypothesisId: "H2",
-        location: "api.ts:fetchStreamBlobForTelegram",
-        message: "fetch_http_not_ok",
-        data: { errMsg },
-      });
       throw new Error(errMsg);
     }
     const blob = await fromResponse(res);
-    void reportClientDebug(token, {
-      hypothesisId: "H1",
-      location: "api.ts:fetchStreamBlobForTelegram",
-      message: "fetch_ok_blob",
-      data: { size: blob.size, via: "fetch" },
-    });
     return blob;
   } catch (e) {
     if (signal?.aborted) {
-      void reportClientDebug(token, {
-        hypothesisId: "H3",
-        location: "api.ts:fetchStreamBlobForTelegram",
-        message: "aborted_before_xhr_fallback",
-        data: {},
-      });
       throw e;
     }
     const msg = e instanceof Error ? e.message : String(e);
     if (/^stream \d/.test(msg)) {
-      void reportClientDebug(token, {
-        hypothesisId: "H2",
-        location: "api.ts:fetchStreamBlobForTelegram",
-        message: "http_error_no_xhr_retry",
-        data: { msg },
-      });
       throw e;
     }
-    void reportClientDebug(token, {
-      hypothesisId: "H1",
-      location: "api.ts:fetchStreamBlobForTelegram",
-      message: "xhr_fallback",
-      data: { lastError: msg },
-    });
-    return fetchStreamBlobViaXhr(url, signal, token);
+    return fetchStreamBlobViaXhr(url, signal);
   }
 }
 
-function fetchStreamBlobViaXhr(url: string, signal: AbortSignal | undefined, token: string): Promise<Blob> {
+function fetchStreamBlobViaXhr(url: string, signal: AbortSignal | undefined): Promise<Blob> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("GET", url, true);
@@ -593,41 +518,17 @@ function fetchStreamBlobViaXhr(url: string, signal: AbortSignal | undefined, tok
       if (xhr.status >= 200 && xhr.status < 300) {
         const raw = xhr.response as Blob;
         const out = new Blob([raw], { type: STREAM_PLAYBACK_BLOB_TYPE });
-        void reportClientDebug(token, {
-          hypothesisId: "H1",
-          location: "api.ts:fetchStreamBlobViaXhr",
-          message: "xhr_ok",
-          data: { size: out.size, via: "xhr" },
-        });
         resolve(out);
         return;
       }
-      void reportClientDebug(token, {
-        hypothesisId: "H2",
-        location: "api.ts:fetchStreamBlobViaXhr",
-        message: "xhr_http",
-        data: { status: xhr.status },
-      });
       reject(new Error(`stream ${xhr.status}`));
     };
     xhr.onerror = () => {
       signal?.removeEventListener("abort", onAbort);
-      void reportClientDebug(token, {
-        hypothesisId: "H1",
-        location: "api.ts:fetchStreamBlobViaXhr",
-        message: "xhr_network",
-        data: {},
-      });
       reject(new Error("xhr network"));
     };
     xhr.ontimeout = () => {
       signal?.removeEventListener("abort", onAbort);
-      void reportClientDebug(token, {
-        hypothesisId: "H1",
-        location: "api.ts:fetchStreamBlobViaXhr",
-        message: "xhr_timeout",
-        data: {},
-      });
       reject(new Error("xhr timeout"));
     };
     xhr.send();
