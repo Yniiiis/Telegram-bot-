@@ -78,15 +78,32 @@ async def stream_track(
     req_headers: dict[str, str] = dict(upstream_extras)
     req_headers.setdefault("User-Agent", _STREAM_BROWSER_UA)
     req_headers.setdefault("Accept", "*/*")
+    ext = (track.external_id or "").strip()
     if track.source == "hitmotop":
         hb = (settings.hitmotop_base_url or "https://rus.hitmotop.com").rstrip("/")
-        ext = (track.external_id or "").strip()
         # CDN often allows hotlinking only when Referer is the song page, not only the site root.
         if ext.isdigit():
             req_headers.setdefault("Referer", f"{hb}/song/{ext}")
         else:
             req_headers.setdefault("Referer", f"{hb}/")
         req_headers.setdefault("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.8")
+        # Catalog client holds cookies from startup warmup; stream client does not — copy cookies into
+        # the MP3 request. Optional HTML GET seeds cookies for the CDN host.
+        if ext.isdigit():
+            try:
+                await catalog_http.get(
+                    f"{hb}/song/{ext}",
+                    headers={
+                        "User-Agent": _STREAM_BROWSER_UA,
+                        "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+                        "Referer": f"{hb}/",
+                        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+                    },
+                    timeout=12.0,
+                    follow_redirects=True,
+                )
+            except httpx.HTTPError:
+                logger.debug("hitmotop stream cookie warmup failed", exc_info=True)
 
     # Hitmotop CDN + Telegram WebView: any client Range (bytes=0-, tiny sniff, seek) often breaks MP3 relay.
     # Always fetch full resource from upstream; our StreamingResponse still streams without buffering the whole file.
@@ -100,7 +117,10 @@ async def stream_track(
 
     for attempt in range(2):
         try:
-            stream_cm = client.stream("GET", media_url, headers=req_headers)
+            stream_kw: dict = {}
+            if track.source == "hitmotop":
+                stream_kw["cookies"] = catalog_http.cookies
+            stream_cm = client.stream("GET", media_url, headers=req_headers, **stream_kw)
             response = await stream_cm.__aenter__()
             response.raise_for_status()
             break
