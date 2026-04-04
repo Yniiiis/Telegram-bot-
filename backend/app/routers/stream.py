@@ -110,20 +110,22 @@ async def stream_track(
     if range_hdr and track.source != "hitmotop":
         req_headers["Range"] = range_hdr
 
-    # Hitmotop: use catalog_http so the cookie jar from warmup + song-page GET applies to the MP3 host.
-    # Passing cookies= into stream_http does not attach the jar the same way. Long read timeout for slow CDN.
+    # Hitmotop: use stream_http (HTTP/1.1). catalog_http is built with http2=True — some CDN MP3 endpoints
+    # misbehave on HTTP/2 long streams. Pass catalog cookies explicitly; keep long read timeout.
+    read_sec = max(120.0, float(settings.stream_read_timeout_sec) * 2.0)
+    hitmotop_timeout = httpx.Timeout(read_sec, connect=settings.stream_connect_timeout_sec)
     stream_cm = None
     response = None
 
     for attempt in range(2):
         try:
             if track.source == "hitmotop":
-                read_sec = max(120.0, float(settings.stream_read_timeout_sec) * 2.0)
-                stream_cm = catalog_http.stream(
+                stream_cm = stream_http.stream(
                     "GET",
                     media_url,
                     headers=req_headers,
-                    timeout=httpx.Timeout(read_sec, connect=settings.stream_connect_timeout_sec),
+                    cookies=catalog_http.cookies,
+                    timeout=hitmotop_timeout,
                 )
             else:
                 stream_cm = stream_http.stream("GET", media_url, headers=req_headers)
