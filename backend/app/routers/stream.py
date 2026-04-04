@@ -110,17 +110,23 @@ async def stream_track(
     if range_hdr and track.source != "hitmotop":
         req_headers["Range"] = range_hdr
 
-    # Dedicated stream pool (separate from catalog) — keep-alive + bounded concurrency; avoids per-request client cost.
-    client = stream_http
+    # Hitmotop: use catalog_http so the cookie jar from warmup + song-page GET applies to the MP3 host.
+    # Passing cookies= into stream_http does not attach the jar the same way. Long read timeout for slow CDN.
     stream_cm = None
     response = None
 
     for attempt in range(2):
         try:
-            stream_kw: dict = {}
             if track.source == "hitmotop":
-                stream_kw["cookies"] = catalog_http.cookies
-            stream_cm = client.stream("GET", media_url, headers=req_headers, **stream_kw)
+                read_sec = max(120.0, float(settings.stream_read_timeout_sec) * 2.0)
+                stream_cm = catalog_http.stream(
+                    "GET",
+                    media_url,
+                    headers=req_headers,
+                    timeout=httpx.Timeout(read_sec, connect=settings.stream_connect_timeout_sec),
+                )
+            else:
+                stream_cm = stream_http.stream("GET", media_url, headers=req_headers)
             response = await stream_cm.__aenter__()
             response.raise_for_status()
             break
