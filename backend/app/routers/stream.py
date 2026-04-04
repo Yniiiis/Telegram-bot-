@@ -13,7 +13,10 @@ from app.db.session import get_db
 from app.deps import get_current_user_bearer_or_query_token
 from app.models.track import Track
 from app.models.user import User
-from app.services.catalog.hitmotop_source import refresh_hitmotop_mp3_from_song_page
+from app.services.catalog.hitmotop_source import (
+    refresh_hitmotop_mp3_from_search,
+    refresh_hitmotop_mp3_from_song_page,
+)
 from app.services.playback_media import PlaybackResolveError, resolve_playback_media
 from app.services.stream_disk_cache import try_file_cache_response
 
@@ -75,6 +78,10 @@ async def stream_track(
     req_headers: dict[str, str] = dict(upstream_extras)
     req_headers.setdefault("User-Agent", _STREAM_BROWSER_UA)
     req_headers.setdefault("Accept", "*/*")
+    if track.source == "hitmotop":
+        hb = (settings.hitmotop_base_url or "https://rus.hitmotop.com").rstrip("/")
+        req_headers.setdefault("Referer", f"{hb}/")
+        req_headers.setdefault("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.8")
 
     # Hitmotop CDN + Telegram WebView: any client Range (bytes=0-, tiny sniff, seek) often breaks MP3 relay.
     # Always fetch full resource from upstream; our StreamingResponse still streams without buffering the whole file.
@@ -104,6 +111,14 @@ async def stream_track(
                 new_url = await refresh_hitmotop_mp3_from_song_page(
                     track.source, track.external_id, catalog_http
                 )
+                if not new_url or new_url.rstrip() == (media_url or "").rstrip():
+                    new_url = await refresh_hitmotop_mp3_from_search(
+                        track.source,
+                        track.external_id,
+                        track.title,
+                        track.artist,
+                        catalog_http,
+                    )
                 if new_url and new_url.rstrip() != (media_url or "").rstrip():
                     logger.info("stream hitmotop_mp3_refreshed track_id=%s", track_id)
                     track.audio_url = new_url

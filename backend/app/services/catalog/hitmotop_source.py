@@ -299,3 +299,32 @@ async def refresh_hitmotop_mp3_from_song_page(
     if pairs:
         return pairs[0][2]
     return None
+
+
+async def refresh_hitmotop_mp3_from_search(
+    source: str,
+    external_id: str,
+    title: str,
+    artist: str,
+    client: httpx.AsyncClient,
+) -> str | None:
+    """
+    If the song page yields nothing or the same dead link, search by artist+title and
+    pick the row matching external_id (Hitmotop numeric song id).
+    """
+    if source != "hitmotop":
+        return None
+    ext = (external_id or "").strip()
+    if not ext.isdigit():
+        return None
+    a = " ".join((artist or "Unknown").split()).strip()
+    t = " ".join((title or "Unknown").split()).strip()
+    q = f"{a} {t}".strip()
+    if not q:
+        return None
+    src = HitmotopCatalogSource()
+    rows = await src.search(client, q, offset=0, limit=40, quick=True)
+    for row in rows:
+        if row.external_id == ext:
+            return row.audio_url
+    return None
