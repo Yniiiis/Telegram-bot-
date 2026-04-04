@@ -80,7 +80,12 @@ async def stream_track(
     req_headers.setdefault("Accept", "*/*")
     if track.source == "hitmotop":
         hb = (settings.hitmotop_base_url or "https://rus.hitmotop.com").rstrip("/")
-        req_headers.setdefault("Referer", f"{hb}/")
+        ext = (track.external_id or "").strip()
+        # CDN often allows hotlinking only when Referer is the song page, not only the site root.
+        if ext.isdigit():
+            req_headers.setdefault("Referer", f"{hb}/song/{ext}")
+        else:
+            req_headers.setdefault("Referer", f"{hb}/")
         req_headers.setdefault("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.8")
 
     # Hitmotop CDN + Telegram WebView: any client Range (bytes=0-, tiny sniff, seek) often breaks MP3 relay.

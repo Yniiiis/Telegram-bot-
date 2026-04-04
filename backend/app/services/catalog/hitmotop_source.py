@@ -311,6 +311,7 @@ async def refresh_hitmotop_mp3_from_search(
     """
     If the song page yields nothing or the same dead link, search by artist+title and
     pick the row matching external_id (Hitmotop numeric song id).
+    Tries several query shapes — ranking on Hitmotop can hide the track on the first query.
     """
     if source != "hitmotop":
         return None
@@ -319,12 +320,23 @@ async def refresh_hitmotop_mp3_from_search(
         return None
     a = " ".join((artist or "Unknown").split()).strip()
     t = " ".join((title or "Unknown").split()).strip()
-    q = f"{a} {t}".strip()
-    if not q:
-        return None
+    queries: list[str] = []
+    if f"{a} {t}".strip():
+        queries.append(f"{a} {t}".strip())
+    if t and t != "Unknown":
+        queries.append(t)
+    if a and a != "Unknown" and len(a) >= 2:
+        queries.append(a)
+
+    seen: set[str] = set()
     src = HitmotopCatalogSource()
-    rows = await src.search(client, q, offset=0, limit=40, quick=True)
-    for row in rows:
-        if row.external_id == ext:
-            return row.audio_url
+    for q in queries:
+        q = q.strip()
+        if not q or q in seen:
+            continue
+        seen.add(q)
+        rows = await src.search(client, q, offset=0, limit=64, quick=True)
+        for row in rows:
+            if row.external_id == ext:
+                return row.audio_url
     return None
