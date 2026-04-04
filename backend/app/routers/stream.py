@@ -1,5 +1,4 @@
 import logging
-import re
 from collections.abc import AsyncIterator
 from uuid import UUID
 
@@ -25,29 +24,6 @@ _STREAM_BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 )
-
-
-def _tiny_range_sniff(range_hdr: str | None) -> bool:
-    """
-    WebKit / Telegram WebView often sends a small Range (e.g. bytes=0-1) to sniff the resource.
-    Forwarding that to CDNs can yield 206 + a few bytes; <audio> then fails with SRC_NOT_SUPPORTED.
-    """
-    if not range_hdr:
-        return False
-    m = re.match(r"^\s*bytes=(\d+)\s*-\s*(\d*)\s*$", range_hdr.strip(), re.IGNORECASE)
-    if not m:
-        return False
-    start = int(m.group(1))
-    if start != 0:
-        return False
-    end_s = m.group(2)
-    if end_s == "":
-        return False
-    end = int(end_s)
-    if end < start:
-        return False
-    nbytes = end - start + 1
-    return nbytes <= 16_384
 
 
 def _relay_headers(resp: httpx.Response) -> dict[str, str]:
@@ -99,11 +75,10 @@ async def stream_track(
     req_headers.setdefault("User-Agent", _STREAM_BROWSER_UA)
     req_headers.setdefault("Accept", "*/*")
 
-    if range_hdr:
-        if track.source == "hitmotop" and _tiny_range_sniff(range_hdr):
-            logger.debug("stream skip tiny Range for hitmotop track_id=%s hdr=%r", track_id, range_hdr[:48])
-        else:
-            req_headers["Range"] = range_hdr
+    # Hitmotop CDN + Telegram WebView: any client Range (bytes=0-, tiny sniff, seek) often breaks MP3 relay.
+    # Always fetch full resource from upstream; our StreamingResponse still streams without buffering the whole file.
+    if range_hdr and track.source != "hitmotop":
+        req_headers["Range"] = range_hdr
 
     # Dedicated stream pool (separate from catalog) — keep-alive + bounded concurrency; avoids per-request client cost.
     client = stream_http

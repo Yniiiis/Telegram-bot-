@@ -8,6 +8,15 @@ import { useCurrentTrack, usePlayerStore } from "../store/playerStore";
 
 const PREMATURE_END_MAX_RETRIES = 2;
 
+function sameStreamUrl(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  try {
+    return new URL(a).href === new URL(b).href;
+  } catch {
+    return a === b;
+  }
+}
+
 /**
  * WebViews often mis-report `HTMLMediaElement.duration` when the stream stalls or only a chunk
  * was buffered (e.g. ~10–15s) — then `ended` fires with cur≈dur and the old check did not treat
@@ -101,18 +110,11 @@ export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
     const url = streamUrl(track.id, token);
 
     if (!isNgrokApiBase()) {
-      const same =
-        el.querySelector("source")?.getAttribute("src") === url ||
-        el.src === url ||
-        el.currentSrc === url;
-      if (!same) {
+      // Direct src so el.src/currentSrc stay in sync (fixes Telegram WebView + <source>-only bugs).
+      if (!sameStreamUrl(url, el.src) && !sameStreamUrl(url, el.currentSrc)) {
         clearPlaybackError();
-        el.removeAttribute("src");
         while (el.firstChild) el.removeChild(el.firstChild);
-        const src = document.createElement("source");
-        src.src = url;
-        src.type = "audio/mpeg";
-        el.appendChild(src);
+        el.src = url;
         el.load();
         playWhenBuffered(el, setPlaybackError);
       }
@@ -179,13 +181,14 @@ export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
     const isStillThisTrack = () => {
       const st = usePlayerStore.getState();
       if (st.queue[st.index]?.id !== track.id) return false;
-      if (!el.src) return false;
-      if (el.src.startsWith("blob:")) return true;
+      const resolved = el.src || el.currentSrc;
+      if (!resolved) return false;
+      if (resolved.startsWith("blob:")) return true;
       try {
-        const path = new URL(el.src, window.location.origin).pathname;
+        const path = new URL(resolved, window.location.origin).pathname;
         return path.includes(`/stream/${track.id}`);
       } catch {
-        return el.src.includes(track.id);
+        return resolved.includes(track.id);
       }
     };
 
