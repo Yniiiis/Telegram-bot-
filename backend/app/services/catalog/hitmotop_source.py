@@ -270,3 +270,32 @@ class HitmotopCatalogSource(CatalogSource):
             )
 
         return _tracks_from_pairs(pairs, base, q, offset=0, limit=limit)
+
+
+async def refresh_hitmotop_mp3_from_song_page(
+    source: str,
+    external_id: str,
+    client: httpx.AsyncClient,
+) -> str | None:
+    """
+    Re-parse the Hitmotop song page to get a fresh direct MP3 URL.
+    Stored CDN links can 403/404 while the site still serves a new link for the same song id.
+    """
+    if source != "hitmotop":
+        return None
+    ext = (external_id or "").strip()
+    if not ext.isdigit():
+        return None
+    base = await _resolve_effective_base(client)
+    url = f"{base}/song/{ext}"
+    src = HitmotopCatalogSource()
+    html = await src._get_html(client, url, base, timeout=18.0)
+    if not html:
+        return None
+    pairs = extract_track_pairs(html, base)
+    for sid, _title, mp3, _artist in pairs:
+        if sid == ext:
+            return mp3
+    if pairs:
+        return pairs[0][2]
+    return None

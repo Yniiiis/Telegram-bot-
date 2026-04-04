@@ -1,6 +1,13 @@
 import { useEffect, useRef } from "react";
 
-import { getSimilarTracks, isNgrokApiBase, recordPlay, streamUrl } from "../lib/api";
+import {
+  fetchStreamBlobForTelegram,
+  getSimilarTracks,
+  isNgrokApiBase,
+  recordPlay,
+  reportClientDebug,
+  streamUrl,
+} from "../lib/api";
 import { ensureNgrokStreamSw } from "../lib/ngrokStreamSw";
 import { isTelegramWebApp } from "../lib/telegram";
 import { useAuthStore } from "../store/authStore";
@@ -10,6 +17,15 @@ import { useCurrentTrack, usePlayerStore } from "../store/playerStore";
 const PREMATURE_END_MAX_RETRIES = 2;
 /** Max size to load into RAM for Telegram blob fallback (MP3 proxy). */
 const TELEGRAM_BLOB_MAX_BYTES = 55 * 1024 * 1024;
+
+/** Short, safe fragment for UI (no secrets). */
+function safePlaybackErrDetail(err: unknown): string | null {
+  const raw = err instanceof Error ? err.message : String(err);
+  if (!raw || raw.length > 160) return null;
+  if (/token|bearer|authorization|jwt|initdata/i.test(raw)) return null;
+  if (!/^[\w\s.\-]+$/u.test(raw.trim())) return null;
+  return raw.trim();
+}
 
 function sameStreamUrl(a: string, b: string): boolean {
   if (!a || !b) return false;
@@ -174,6 +190,8 @@ export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
     if (!el) return;
     if (!track || !token) return;
 
+    const streamLoadAbort = new AbortController();
+
     let rafId = 0;
     const onTime = () => {
       if (rafId) return;
@@ -231,6 +249,25 @@ export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
       const st0 = usePlayerStore.getState();
       if (st0.queue[st0.index]?.id !== track.id) return;
 
+      void reportClientDebug(token, {
+        hypothesisId: "H4",
+        location: "usePlayerEngine.ts:onError",
+        message: "audio_element_error",
+        data: {
+          mediaErrorCode: code,
+          networkState: el.networkState,
+          readyState: el.readyState,
+          telegram: isTelegramWebApp(),
+          ngrok: isNgrokApiBase(),
+          blobFallbackEligible:
+            code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED &&
+            isTelegramWebApp() &&
+            !isNgrokApiBase() &&
+            !telegramBlobFallbackTried.current,
+          trackId: track.id,
+        },
+      });
+
       /* Telegram WebView often reports SRC_NOT_SUPPORTED for remote /stream URLs (chunked, MIME).
          One fetch→blob→objectURL retry usually plays the same bytes. */
       if (
@@ -242,12 +279,9 @@ export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
         telegramBlobFallbackTried.current = true;
         const u = streamUrl(track.id, token);
         clearPlaybackError();
-        void fetch(u, { mode: "cors" })
-          .then((r) => {
-            if (!r.ok) throw new Error(String(r.status));
-            return r.blob();
-          })
+        void fetchStreamBlobForTelegram(u, token, streamLoadAbort.signal)
           .then((blob) => {
+            if (streamLoadAbort.signal.aborted) return;
             if (blob.size > TELEGRAM_BLOB_MAX_BYTES) {
               setPlaybackError("This track is too large to buffer inside Telegram. Try a shorter track.");
               usePlayerStore.getState().pause();
@@ -260,9 +294,24 @@ export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
             el.load();
             playWhenBuffered(el, setPlaybackError);
           })
-          .catch(() => {
+          .catch((err) => {
+            void reportClientDebug(token, {
+              hypothesisId: "H1",
+              location: "usePlayerEngine.ts:blobFetchCatch",
+              message: "blob_fallback_failed",
+              data: {
+                errName: err instanceof Error ? err.name : typeof err,
+                errMsg: err instanceof Error ? err.message : String(err),
+                aborted: streamLoadAbort.signal.aborted,
+              },
+            });
+            if (streamLoadAbort.signal.aborted) return;
+            if (err instanceof DOMException && err.name === "AbortError") return;
+            const detail = safePlaybackErrDetail(err);
             setPlaybackError(
-              "Could not load audio in Telegram. Check connection or try another track from Hitmotop search.",
+              detail
+                ? `Could not load audio in Telegram (${detail}). Try another track from Hitmotop search.`
+                : "Could not load audio in Telegram. Check connection or try another track from Hitmotop search.",
             );
             usePlayerStore.getState().pause();
           });
@@ -294,6 +343,7 @@ export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
     el.addEventListener("ended", onEnded);
     el.addEventListener("error", onError);
     return () => {
+      streamLoadAbort.abort();
       if (rafId) cancelAnimationFrame(rafId);
       el.removeEventListener("timeupdate", onTime);
       el.removeEventListener("ended", onEnded);

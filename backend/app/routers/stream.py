@@ -13,6 +13,7 @@ from app.db.session import get_db
 from app.deps import get_current_user_bearer_or_query_token
 from app.models.track import Track
 from app.models.user import User
+from app.services.catalog.hitmotop_source import refresh_hitmotop_mp3_from_song_page
 from app.services.playback_media import PlaybackResolveError, resolve_playback_media
 from app.services.stream_disk_cache import try_file_cache_response
 
@@ -82,39 +83,63 @@ async def stream_track(
 
     # Dedicated stream pool (separate from catalog) — keep-alive + bounded concurrency; avoids per-request client cost.
     client = stream_http
-    stream_cm = client.stream("GET", media_url, headers=req_headers)
-    try:
-        response = await stream_cm.__aenter__()
-    except httpx.HTTPError as exc:
-        logger.warning("stream upstream connect failed track_id=%s: %s", track_id, exc)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail={
-                "code": "UPSTREAM_UNREACHABLE",
-                "message": "Could not reach the audio source.",
-            },
-        ) from exc
+    stream_cm = None
+    response = None
 
-    try:
-        response.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        await stream_cm.__aexit__(None, None, None)
-        code = "UPSTREAM_HTTP_ERROR"
-        if exc.response.status_code in (403, 404):
-            code = "UPSTREAM_NOT_AVAILABLE"
-        logger.warning(
-            "stream upstream status track_id=%s status=%s",
-            track_id,
-            exc.response.status_code,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail={
-                "code": code,
-                "message": "The audio source returned an error. This track may be unavailable.",
-                "upstream_status": exc.response.status_code,
-            },
-        ) from exc
+    for attempt in range(2):
+        try:
+            stream_cm = client.stream("GET", media_url, headers=req_headers)
+            response = await stream_cm.__aenter__()
+            response.raise_for_status()
+            break
+        except httpx.HTTPStatusError as exc:
+            if stream_cm is not None:
+                await stream_cm.__aexit__(None, None, None)
+                stream_cm = None
+            if (
+                attempt == 0
+                and track.source == "hitmotop"
+                and exc.response.status_code in (403, 404)
+            ):
+                new_url = await refresh_hitmotop_mp3_from_song_page(
+                    track.source, track.external_id, catalog_http
+                )
+                if new_url and new_url.rstrip() != (media_url or "").rstrip():
+                    logger.info("stream hitmotop_mp3_refreshed track_id=%s", track_id)
+                    track.audio_url = new_url
+                    await db.commit()
+                    media_url = new_url
+                    continue
+            code = "UPSTREAM_HTTP_ERROR"
+            if exc.response.status_code in (403, 404):
+                code = "UPSTREAM_NOT_AVAILABLE"
+            logger.warning(
+                "stream upstream status track_id=%s status=%s",
+                track_id,
+                exc.response.status_code,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail={
+                    "code": code,
+                    "message": "The audio source returned an error. This track may be unavailable.",
+                    "upstream_status": exc.response.status_code,
+                },
+            ) from exc
+        except httpx.HTTPError as exc:
+            if stream_cm is not None:
+                await stream_cm.__aexit__(None, None, None)
+                stream_cm = None
+            logger.warning("stream upstream connect failed track_id=%s: %s", track_id, exc)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail={
+                    "code": "UPSTREAM_UNREACHABLE",
+                    "message": "Could not reach the audio source.",
+                },
+            ) from exc
+
+    assert response is not None and stream_cm is not None
 
     headers = _relay_headers(response)
 

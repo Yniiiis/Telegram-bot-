@@ -76,6 +76,33 @@ async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<R
   return fetch(input, { ...init, headers: mergeHeaders(init?.headers) });
 }
 
+/** Fire-and-forget diagnostics to API logs (journalctl on VPS). No secrets in payload. */
+export async function reportClientDebug(
+  token: string,
+  payload: {
+    hypothesisId?: string;
+    location: string;
+    message: string;
+    data?: Record<string, unknown>;
+  },
+): Promise<void> {
+  try {
+    const res = await apiFetch(`${base()}/client-debug`, {
+      method: "POST",
+      headers: { ...authHeader(token), "Content-Type": "application/json" },
+      body: JSON.stringify({
+        hypothesis_id: payload.hypothesisId,
+        location: payload.location,
+        message: payload.message,
+        data: payload.data,
+      }),
+    });
+    if (!res.ok) return;
+  } catch {
+    /* ignore */
+  }
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code?: string;
@@ -425,4 +452,184 @@ export function streamUrl(trackId: string, token: string): string {
   const u = new URL(`${b.replace(/\/$/, "")}${path}`, window.location.origin);
   u.searchParams.set("token", token);
   return u.toString();
+}
+
+/** Hitmotop proxy is always MP3; Telegram WebView often rejects blob: without an audio/* type. */
+const STREAM_PLAYBACK_BLOB_TYPE = "audio/mpeg";
+
+/** Best-effort parse of FastAPI JSON error from /stream (502 with detail.code). */
+async function streamHttpErrorMessage(res: Response): Promise<string> {
+  const base = `stream ${res.status}`;
+  let text = "";
+  try {
+    text = (await res.clone().text()).slice(0, 4096);
+  } catch {
+    return base;
+  }
+  const t = text.trim();
+  if (!t.startsWith("{")) return base;
+  try {
+    const j = JSON.parse(t) as { detail?: unknown };
+    const d = j.detail;
+    if (d && typeof d === "object" && "code" in d) {
+      return `${base} ${String((d as { code: string }).code)}`;
+    }
+    if (typeof d === "string" && d.length) {
+      return `${base} ${d.slice(0, 120)}`;
+    }
+  } catch {
+    /* ignore */
+  }
+  return base;
+}
+
+/**
+ * Load full stream for Telegram blob fallback: **same auth as `<audio src>`** — JWT only in `?token=`
+ * (no `Authorization` header). A custom header turns the request into a CORS preflight; many Telegram
+ * WebViews fail that while still playing the same URL on `<audio>`.
+ * Uses explicit MIME on the Blob — some WebViews refuse playback when type is empty/octet-stream.
+ *
+ * Order: **fetch first**, **XHR** on transport failure only; HTTP status errors are not retried.
+ */
+export async function fetchStreamBlobForTelegram(
+  url: string,
+  token: string,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  const fromResponse = async (res: Response): Promise<Blob> => {
+    const ab = await res.arrayBuffer();
+    return new Blob([ab], { type: STREAM_PLAYBACK_BLOB_TYPE });
+  };
+
+  let host = "";
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    host = "invalid-url";
+  }
+  void reportClientDebug(token, {
+    hypothesisId: "H1",
+    location: "api.ts:fetchStreamBlobForTelegram",
+    message: "start",
+    data: {
+      apiHost: host,
+      signalAborted: Boolean(signal?.aborted),
+      authMode: "query_only",
+      order: "fetch_first_xhr_fallback",
+    },
+  });
+
+  try {
+    const res = await apiFetch(url, {
+      method: "GET",
+      mode: "cors",
+      credentials: "omit",
+      cache: "no-store",
+      signal,
+    });
+    if (!res.ok) {
+      const errMsg = await streamHttpErrorMessage(res);
+      void reportClientDebug(token, {
+        hypothesisId: "H2",
+        location: "api.ts:fetchStreamBlobForTelegram",
+        message: "fetch_http_not_ok",
+        data: { errMsg },
+      });
+      throw new Error(errMsg);
+    }
+    const blob = await fromResponse(res);
+    void reportClientDebug(token, {
+      hypothesisId: "H1",
+      location: "api.ts:fetchStreamBlobForTelegram",
+      message: "fetch_ok_blob",
+      data: { size: blob.size, via: "fetch" },
+    });
+    return blob;
+  } catch (e) {
+    if (signal?.aborted) {
+      void reportClientDebug(token, {
+        hypothesisId: "H3",
+        location: "api.ts:fetchStreamBlobForTelegram",
+        message: "aborted_before_xhr_fallback",
+        data: {},
+      });
+      throw e;
+    }
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/^stream \d/.test(msg)) {
+      void reportClientDebug(token, {
+        hypothesisId: "H2",
+        location: "api.ts:fetchStreamBlobForTelegram",
+        message: "http_error_no_xhr_retry",
+        data: { msg },
+      });
+      throw e;
+    }
+    void reportClientDebug(token, {
+      hypothesisId: "H1",
+      location: "api.ts:fetchStreamBlobForTelegram",
+      message: "xhr_fallback",
+      data: { lastError: msg },
+    });
+    return fetchStreamBlobViaXhr(url, signal, token);
+  }
+}
+
+function fetchStreamBlobViaXhr(url: string, signal: AbortSignal | undefined, token: string): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("GET", url, true);
+    xhr.responseType = "blob";
+    xhr.timeout = 180_000;
+    for (const [k, v] of Object.entries(ngrokBypassHeaders())) {
+      xhr.setRequestHeader(k, v);
+    }
+    const onAbort = () => {
+      xhr.abort();
+    };
+    signal?.addEventListener("abort", onAbort);
+    xhr.onload = () => {
+      signal?.removeEventListener("abort", onAbort);
+      if (xhr.status >= 200 && xhr.status < 300) {
+        const raw = xhr.response as Blob;
+        const out = new Blob([raw], { type: STREAM_PLAYBACK_BLOB_TYPE });
+        void reportClientDebug(token, {
+          hypothesisId: "H1",
+          location: "api.ts:fetchStreamBlobViaXhr",
+          message: "xhr_ok",
+          data: { size: out.size, via: "xhr" },
+        });
+        resolve(out);
+        return;
+      }
+      void reportClientDebug(token, {
+        hypothesisId: "H2",
+        location: "api.ts:fetchStreamBlobViaXhr",
+        message: "xhr_http",
+        data: { status: xhr.status },
+      });
+      reject(new Error(`stream ${xhr.status}`));
+    };
+    xhr.onerror = () => {
+      signal?.removeEventListener("abort", onAbort);
+      void reportClientDebug(token, {
+        hypothesisId: "H1",
+        location: "api.ts:fetchStreamBlobViaXhr",
+        message: "xhr_network",
+        data: {},
+      });
+      reject(new Error("xhr network"));
+    };
+    xhr.ontimeout = () => {
+      signal?.removeEventListener("abort", onAbort);
+      void reportClientDebug(token, {
+        hypothesisId: "H1",
+        location: "api.ts:fetchStreamBlobViaXhr",
+        message: "xhr_timeout",
+        data: {},
+      });
+      reject(new Error("xhr timeout"));
+    };
+    xhr.send();
+  });
 }
