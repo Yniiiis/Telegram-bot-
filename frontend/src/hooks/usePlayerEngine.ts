@@ -17,15 +17,6 @@ const PREMATURE_END_MAX_RETRIES = 2;
 /** Max size to load into RAM for Telegram blob fallback (MP3 proxy). */
 const TELEGRAM_BLOB_MAX_BYTES = 55 * 1024 * 1024;
 
-/** Short, safe fragment for UI (no secrets). */
-function safePlaybackErrDetail(err: unknown): string | null {
-  const raw = err instanceof Error ? err.message : String(err);
-  if (!raw || raw.length > 160) return null;
-  if (/token|bearer|authorization|jwt|initdata/i.test(raw)) return null;
-  if (!/^[\w\s.\-]+$/u.test(raw.trim())) return null;
-  return raw.trim();
-}
-
 function sameStreamUrl(a: string, b: string): boolean {
   if (!a || !b) return false;
   try {
@@ -274,14 +265,11 @@ export function usePlayerEngine(): React.RefObject<HTMLAudioElement | null> {
             el.load();
             playWhenBuffered(el, setPlaybackError);
           })
-          .catch((err) => {
+          .catch((err: unknown) => {
             if (streamLoadAbort.signal.aborted) return;
             if (err instanceof DOMException && err.name === "AbortError") return;
-            const detail = safePlaybackErrDetail(err);
             setPlaybackError(
-              detail
-                ? `Could not load audio in Telegram (${detail}). Try another track from Hitmotop search.`
-                : "Could not load audio in Telegram. Check connection or try another track from Hitmotop search.",
+              "Could not load audio in Telegram. Check connection or try another track from Hitmotop search.",
             );
             usePlayerStore.getState().pause();
           });

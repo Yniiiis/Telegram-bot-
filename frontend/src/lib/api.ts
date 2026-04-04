@@ -430,32 +430,6 @@ export function streamUrl(trackId: string, token: string): string {
 /** Hitmotop proxy is always MP3; Telegram WebView often rejects blob: without an audio/* type. */
 const STREAM_PLAYBACK_BLOB_TYPE = "audio/mpeg";
 
-/** Best-effort parse of FastAPI JSON error from /stream (502 with detail.code). */
-async function streamHttpErrorMessage(res: Response): Promise<string> {
-  const base = `stream ${res.status}`;
-  let text = "";
-  try {
-    text = (await res.clone().text()).slice(0, 4096);
-  } catch {
-    return base;
-  }
-  const t = text.trim();
-  if (!t.startsWith("{")) return base;
-  try {
-    const j = JSON.parse(t) as { detail?: unknown };
-    const d = j.detail;
-    if (d && typeof d === "object" && "code" in d) {
-      return `${base} ${String((d as { code: string }).code)}`;
-    }
-    if (typeof d === "string" && d.length) {
-      return `${base} ${d.slice(0, 120)}`;
-    }
-  } catch {
-    /* ignore */
-  }
-  return base;
-}
-
 /**
  * Load full stream for Telegram blob fallback: **same auth as `<audio src>`** — JWT only in `?token=`
  * (no `Authorization` header). A custom header turns the request into a CORS preflight; many Telegram
@@ -483,8 +457,7 @@ export async function fetchStreamBlobForTelegram(
       signal,
     });
     if (!res.ok) {
-      const errMsg = await streamHttpErrorMessage(res);
-      throw new Error(errMsg);
+      throw new Error(`stream ${res.status}`);
     }
     const blob = await fromResponse(res);
     return blob;
